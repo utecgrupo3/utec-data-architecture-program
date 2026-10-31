@@ -53,6 +53,8 @@
 # MAGIC   CASE
 # MAGIC     WHEN stars >= 4 AND sentimiento = 'negative' THEN 'ALTA_SOSPECHA_5ESTRELLAS_NEGATIVO'
 # MAGIC     WHEN stars <= 2 AND sentimiento = 'positive' THEN 'DISONANCIA_BAJA_ESTRELLA_POSITIVO'
+# MAGIC     WHEN stars >= 4 AND sentimiento = 'mixed'    THEN 'SOSPECHA_MEDIA_ALTA_ESTRELLA_MIXTO'
+# MAGIC     WHEN stars <= 2 AND sentimiento = 'mixed'    THEN 'SOSPECHA_MEDIA_BAJA_ESTRELLA_MIXTO'
 # MAGIC     WHEN stars = 3  AND sentimiento IN ('positive', 'negative') THEN 'NEUTRO_POLARIZADO'
 # MAGIC     ELSE 'CONSISTENTE'
 # MAGIC   END                                                                         AS estado_consistencia_ia,
@@ -89,8 +91,10 @@ display(spark.table("workspace.yelp_gold.gld_resenas_enriquecidas").limit(15))
 
 # DBTITLE 1,2. Detección de Inconsistencia Rating vs Sentimiento (Señal de Fraude para Trust & Safety)
 # MAGIC %sql
-# MAGIC -- Reseñas con 4-5 estrellas y sentimiento negativo (o 1-2 estrellas y sentimiento positivo)
-# MAGIC -- son candidatas prioritarias a revisión por el equipo de Rafael Nakamura (Trust & Safety).
+# MAGIC -- Severidad ALTA : 4-5 estrellas con texto negativo, o 1-2 estrellas con texto positivo (disonancia total).
+# MAGIC -- Severidad MEDIA: 4-5 estrellas o 1-2 estrellas con texto 'mixed' (el texto contradice parcialmente la nota).
+# MAGIC -- Ambas son candidatas a revisión por el equipo de Rafael Nakamura (Trust & Safety).
+# MAGIC -- Nota: la severidad se calcula aquí a partir de stars + sentimiento, sin volver a invocar el LLM (FinOps).
 # MAGIC SELECT
 # MAGIC   r.review_id,
 # MAGIC   n.nombre                         AS nombre_comercio,
@@ -99,15 +103,19 @@ display(spark.table("workspace.yelp_gold.gld_resenas_enriquecidas").limit(15))
 # MAGIC   r.stars                          AS estrellas_otorgadas,
 # MAGIC   r.sentimiento                    AS sentimiento_ia,
 # MAGIC   r.tema                           AS tema_detectado_ia,
-# MAGIC   r.estado_consistencia_ia,
+# MAGIC   CASE
+# MAGIC     WHEN (r.stars >= 4 AND r.sentimiento = 'negative')
+# MAGIC       OR (r.stars <= 2 AND r.sentimiento = 'positive') THEN 'ALTA'
+# MAGIC     ELSE 'MEDIA'
+# MAGIC   END                              AS severidad_revision,
 # MAGIC   left(r.text, 220)                AS extracto_resena,
 # MAGIC   r.fecha_resena
 # MAGIC FROM workspace.yelp_gold.gld_resenas_enriquecidas r
 # MAGIC LEFT JOIN workspace.yelp_gold.gld_dim_negocio n
 # MAGIC   ON r.business_id = n.business_id AND n.es_actual = true
-# MAGIC WHERE (r.stars >= 4 AND r.sentimiento = 'negative')
-# MAGIC    OR (r.stars <= 2 AND r.sentimiento = 'positive')
-# MAGIC ORDER BY r.stars DESC, r.fecha_resena DESC;
+# MAGIC WHERE (r.stars >= 4 AND r.sentimiento IN ('negative', 'mixed'))
+# MAGIC    OR (r.stars <= 2 AND r.sentimiento IN ('positive', 'mixed'))
+# MAGIC ORDER BY severidad_revision ASC, r.stars DESC, r.fecha_resena DESC;
 
 # COMMAND ----------
 
@@ -131,6 +139,10 @@ display(spark.table("workspace.yelp_gold.gld_resenas_enriquecidas").limit(15))
 # MAGIC %md
 # MAGIC ---
 # MAGIC ## 3. Conclusiones Analíticas para Trust & Safety y Producto
+# MAGIC
+# MAGIC > **Hallazgo empírico de la corrida (muestra de 500 reseñas, Philadelphia):** el LLM **no encontró disonancias totales** (0 reseñas con 4-5★ y texto `negative`, 0 con 1-2★ y texto `positive`).
+# MAGIC > La señal real aparece en el sentimiento **`mixed`**: **56 reseñas de 4-5★** y **35 reseñas de 1-2★** tienen texto mixto (~18% de la muestra).
+# MAGIC > Por ello la regla se amplió con una **severidad MEDIA** (`SOSPECHA_MEDIA_*`): con una regla binaria (solo `positive`/`negative`) la cola de revisión de Trust & Safety quedaba vacía y ocultaba casos relevantes.
 # MAGIC
 # MAGIC 1. **Detección de Anomalías y Fraude Semántico (*Rafael Nakamura — Trust & Safety*):**
 # MAGIC    * Las reseñas clasificadas como `ALTA_SOSPECHA_5ESTRELLAS_NEGATIVO` (`stars >= 4 AND sentimiento = 'negative'`) capturan dos patrones que las reglas determinísticas tradicionales (`DQ-001` a `DQ-015`) no pueden detectar por sí solas:
