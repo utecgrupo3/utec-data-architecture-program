@@ -87,10 +87,17 @@ brz_usr = spark.table("workspace.yelp_bronze.brz_user")
 
 # Compatibilidad con E6: si slv_user ya tiene COLUMN MASK aplicada sobre `name`, se retira temporalmente
 # antes del overwriteSchema y se vuelve a aplicar al finalizar la conformación.
-try:
+tiene_mascara_activa = (
+    spark.table("workspace.information_schema.column_masks")
+    .filter(
+        (F.col("table_schema") == "yelp_silver")
+        & (F.col("table_name") == "slv_user")
+        & (F.col("column_name") == "name")
+    )
+    .count() > 0
+)
+if tiene_mascara_activa:
     spark.sql("ALTER TABLE workspace.yelp_silver.slv_user ALTER COLUMN name DROP MASK")
-except Exception:
-    pass
 
 slv_user = (brz_usr
     .select(
@@ -337,15 +344,23 @@ WHEN MATCHED THEN UPDATE SET
   b.n_resenas = r.cnt_resenas_activo
 """)
 
-# 5.3 Re-aplicar Column Mask de E6 (ADR-06) sobre slv_user.name si la función gobernada ya existe
-try:
+# 5.3 Re-aplicar Column Mask de E6 (ADR-06) sobre slv_user.name solo si la función gobernada ya fue creada en E6
+existe_fn_mascara = (
+    spark.table("workspace.information_schema.routines")
+    .filter(
+        (F.col("routine_schema") == "yelp_gov")
+        & (F.col("routine_name") == "mascara_nombre")
+    )
+    .count() > 0
+)
+if existe_fn_mascara:
     spark.sql("""
         ALTER TABLE workspace.yelp_silver.slv_user
         ALTER COLUMN name SET MASK workspace.yelp_gov.mascara_nombre
     """)
     print("✔ Máscara dinámica E6 (workspace.yelp_gov.mascara_nombre) preservada en slv_user.name")
-except Exception:
-    pass
+else:
+    print("ℹ Función workspace.yelp_gov.mascara_nombre aún no creada (se registra al ejecutar E6_controles_gobierno/01_controles_unity_catalog).")
 
 # COMMAND ----------
 
