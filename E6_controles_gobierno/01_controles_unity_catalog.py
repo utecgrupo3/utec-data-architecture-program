@@ -284,7 +284,7 @@ print("✔ Opción B aplicada: Vista segura workspace.yelp_gold.vw_usuarios_segu
 # MAGIC     (SELECT count(*) FROM workspace.yelp_silver.slv_review_cuarentena)  AS filas_silver_cuarentena,
 # MAGIC     (SELECT count(*) FROM workspace.yelp_gold.gld_fact_resenas)         AS filas_gold_fact_resenas,
 # MAGIC     (SELECT coalesce(sum(n_resenas), 0) FROM workspace.yelp_gold.gld_kpi_negocio_mensual) AS suma_resenas_kpi_mensual,
-# MAGIC     (SELECT coalesce(sum(resenas_validas), 0) FROM workspace.yelp_gold.gld_salud_resenas) AS suma_validas_salud_resenas,
+# MAGIC     (SELECT coalesce(sum(resenas_verificadas), 0) FROM workspace.yelp_gold.gld_salud_resenas) AS suma_validas_salud_resenas,
 # MAGIC     (SELECT coalesce(sum(resenas_cuarentena), 0) FROM workspace.yelp_gold.gld_salud_resenas) AS suma_cuarentena_salud_resenas
 # MAGIC )
 # MAGIC SELECT
