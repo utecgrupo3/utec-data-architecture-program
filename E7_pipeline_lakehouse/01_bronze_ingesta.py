@@ -89,6 +89,98 @@ registrar_bitacora("bronze", TABLA_REVIEW, n_rev, t0)
 
 # COMMAND ----------
 
+# DBTITLE 1: Documentación de Metadatos en Unity Catalog para la Capa Bronze (Tablas y Columnas)
+COMENTARIOS_TABLAS_BRONZE = {
+    "brz_business": "Capa Bronze (fidelidad al origen): catálogo crudo de negocios locales de YelpConnect, incluyendo estructuras anidadas attributes y hours retenidas bajo Schema-on-Read (ADR-07).",
+    "brz_user": "Capa Bronze (fidelidad al origen): perfiles crudos de usuarios registrados en YelpConnect, incluyendo lista de amigos concatenada y contadores de cumplidos.",
+    "brz_tip": "Capa Bronze (fidelidad al origen): recomendaciones breves (tips) crudas emitidas por usuarios sobre establecimientos comerciales.",
+    "brz_checkin": "Capa Bronze (fidelidad al origen): registros crudos de check-ins por negocio con marcas temporales concatenadas en texto.",
+    "brz_review": "Capa Bronze (ingesta incremental Auto Loader / cloudFiles): flujo transaccional crudo de reseñas y calificaciones emitidas por usuarios.",
+}
+
+COMENTARIOS_COLUMNAS_BRONZE = {
+    "brz_business": {
+        "business_id": "Identificador natural único del negocio en el archivo JSON crudo (22 caracteres)",
+        "name": "Nombre comercial tal como llega del sistema fuente",
+        "address": "Dirección postal en texto libre del establecimiento",
+        "city": "Ciudad del establecimiento sin normalizar",
+        "state": "Código de estado o provincia sin normalizar",
+        "postal_code": "Código postal o ZIP en formato texto",
+        "latitude": "Latitud geográfica cruda del negocio",
+        "longitude": "Longitud geográfica cruda del negocio",
+        "stars": "Calificación promedio publicada en la ficha del negocio (incrementos de 0.5)",
+        "review_count": "Conteo bruto acumulado de reseñas en el origen",
+        "is_open": "Indicador crudo de apertura en formato entero (1 = abierto, 0 = cerrado)",
+        "attributes": "Objeto STRUCT anidado con 39 subcampos opcionales de características del negocio retenido en Bronze bajo Schema-on-Read (ADR-07)",
+        "categories": "Cadena de texto con las categorías del negocio separadas por comas (se transforma a ARRAY<STRING> en Silver según ADR-03)",
+        "hours": "Objeto STRUCT anidado con los horarios de atención por día de la semana (Monday a Sunday) retenido en Bronze (ADR-07)",
+    },
+    "brz_user": {
+        "user_id": "Identificador natural único del usuario en el origen",
+        "name": "Nombre de pila del usuario en crudo (PII directa sujeta a enmascaramiento dinámico ADR-06 en capas superiores)",
+        "review_count": "Conteo acumulado de reseñas escritas por el usuario",
+        "yelping_since": "Fecha y hora de registro del usuario en formato texto crudo",
+        "useful": "Total de votos useful enviados por el usuario",
+        "funny": "Total de votos funny enviados por el usuario",
+        "cool": "Total de votos cool enviados por el usuario",
+        "elite": "Años en los que el usuario tuvo estatus Elite concatenados por comas",
+        "friends": "Lista cruda de user_id de amigos concatenados por comas (origina slv_amistad en Silver)",
+        "fans": "Cantidad de seguidores (fans) del usuario",
+        "average_stars": "Promedio histórico de estrellas otorgadas por el usuario",
+        "compliment_hot": "Cumplidos recibidos de tipo hot",
+        "compliment_more": "Cumplidos recibidos de tipo more",
+        "compliment_profile": "Cumplidos recibidos por su perfil",
+        "compliment_cute": "Cumplidos recibidos de tipo cute",
+        "compliment_list": "Cumplidos recibidos por listas creadas",
+        "compliment_note": "Cumplidos recibidos por notas",
+        "compliment_plain": "Cumplidos generales recibidos (plain)",
+        "compliment_cool": "Cumplidos recibidos de tipo cool",
+        "compliment_funny": "Cumplidos recibidos de tipo funny",
+        "compliment_writer": "Cumplidos recibidos como escritor de reseñas",
+        "compliment_photos": "Cumplidos recibidos por fotografías publicadas",
+    },
+    "brz_tip": {
+        "user_id": "Identificador del usuario autor del tip",
+        "business_id": "Identificador del negocio al que refiere el tip",
+        "text": "Texto libre del consejo breve (tip)",
+        "date": "Fecha y hora del tip en formato texto crudo",
+        "compliment_count": "Cantidad de cumplidos recibidos por el tip",
+    },
+    "brz_checkin": {
+        "business_id": "Identificador del negocio donde ocurrieron los check-ins",
+        "date": "Cadena con todas las marcas temporales de check-in del negocio concatenadas por comas (se explota y deduplica por hora en Silver según ADR-01)",
+    },
+    "brz_review": {
+        "review_id": "Identificador natural único de la reseña en el JSON crudo",
+        "user_id": "Identificador del usuario autor de la reseña",
+        "business_id": "Identificador del negocio evaluado en la reseña",
+        "stars": "Calificación otorgada en crudo (escala 1 a 5)",
+        "useful": "Votos de utilidad (useful) recibidos por la reseña",
+        "funny": "Votos graciosos (funny) recibidos por la reseña",
+        "cool": "Votos positivos (cool) recibidos por la reseña",
+        "text": "Texto libre completo de la opinión del usuario",
+        "date": "Marca temporal de publicación de la reseña en formato texto crudo",
+    },
+}
+
+COMENTARIOS_AUDITORIA = {
+    "_archivo_origen": "Ruta física del archivo .json/.json.gz de origen en el Volume (/Volumes/workspace/yelp_bronze/raw/)",
+    "_fecha_ingesta": "Timestamp exacto de ingesta del registro hacia la capa Bronze (auditoría técnica)",
+    "_rescued_data": "Columna de rescate generada por Auto Loader (cloudFiles) para capturar campos no conformes o evolución inesperada de tipos",
+}
+
+for tabla_corta, comentario_tabla in COMENTARIOS_TABLAS_BRONZE.items():
+    tabla_fqn = f"workspace.yelp_bronze.{tabla_corta}"
+    spark.sql(f"COMMENT ON TABLE {tabla_fqn} IS '{comentario_tabla}'")
+    cols_reales = set(spark.table(tabla_fqn).columns)
+    mapa_cols = {**COMENTARIOS_COLUMNAS_BRONZE.get(tabla_corta, {}), **COMENTARIOS_AUDITORIA}
+    for col_name, col_comment in mapa_cols.items():
+        if col_name in cols_reales:
+            spark.sql(f"ALTER TABLE {tabla_fqn} ALTER COLUMN `{col_name}` COMMENT '{col_comment}'")
+    print(f"✔ Comentarios aplicados en {tabla_fqn} ({len(cols_reales)} columnas)")
+
+# COMMAND ----------
+
 # MAGIC %md
 # MAGIC ## 1. ¿Por qué Auto Loader (`cloudFiles`) garantiza Ingesta Idempotente (*Exactly-Once*)?
 # MAGIC
