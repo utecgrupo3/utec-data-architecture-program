@@ -1,0 +1,503 @@
+# Documento Formal de Arquitectura de Datos · Caso YelpConnect
+**Programa en Arquitectura de Datos · UTEC Posgrado**
+**Equipo:** Data Evolution | **Caso Prioritario:** Caso de Uso de Producto (Andrew Collins, VP of Product)
+
+---
+
+## Ficha Técnica del Documento
+
+| Campo | Contenido |
+| :--- | :--- |
+| **Título del Proyecto** | Arquitectura de Datos Integral y Gobierno de la Plataforma YelpConnect |
+| **Caso de Uso Prioritario** | **Caso de Uso de Producto (Andrew Collins, VP of Product):** Calidad de la Experiencia de Usuario, Calificación Ponderada Confiable y Métricas de Engagement |
+| **Organización / Programa** | Posgrado Universidad de Ingeniería y Tecnología (UTEC) — Escuela de Posgrado |
+| **Equipo de Trabajo** | **Data Evolution** |
+| **Integrantes y Roles** | • **Jamir Huaman:** Arquitecto/a de Datos (Coordinador General)<br>• **John Huerta:** Modelador/a de Datos (Relator Módulo 5 · Arquitectura Cloud)<br>• **Leonardo Pacheco:** Steward de Gobierno (Relator Módulo 1)<br>• **Gabriela Matto:** Relator/a Módulo 2 · Gestión y Coordinación<br>• **Josuhe Sosa:** Ingeniero/a de Datos (Relator Módulo 4)<br>• **Martin Valencia:** Analista de BI y Valor (Relator Módulos 6 a 10) |
+| **Plataforma Tecnológica** | Databricks Runtime 14.3 LTS Serverless · Delta Lake 3.2 · Unity Catalog (`workspace`) · PySpark |
+| **Marcos de Referencia** | TOGAF Standard 10 (ADM) · Kimball Dimensional Modeling · DAMA-DMBOK 2 · Lakehouse Medallion |
+| **Fecha de Consolidación** | Octubre 2026 |
+| **Versión del Documento** | **v1.2 (Versión Integrada con Modelado Hackolade y Grafo Social)** |
+| **Estado** | Aprobado para Sustentación Formal con Mención de Excelencia |
+
+---
+
+## Control de Versiones
+
+| Versión | Fecha | Módulo | Cambio realizado y motivo | Autor |
+| :--- | :--- | :--- | :--- | :--- |
+| **v0.1** | 11/08/2026 | M1 · Fundamentos y Estrategia | Creación del documento base, definición del SoAW, identificación de dolores de Andrew Collins y delimitación del alcance. | Jamir Huaman |
+| **v0.2** | 18/08/2026 | M2 · Seguridad y Gobierno | Incorporación de la matriz RACI, modelo de roles (Andrew Collins como Owner de Producto y Negocio), clasificación de datos PII y dimensiones de calidad. | Leonardo Pacheco |
+| **v0.3** | 25/08/2026 | M3 · MDM y Metadata | Inclusión del catálogo de 23 términos del Glosario de Negocio, Diccionario de Datos técnico y formalización de las primeras 12 reglas DQ en lenguaje de negocio. | Leonardo Pacheco |
+| **v0.4** | 08/09/2026 | M4 · Modelado Avanzado | Diseño del Modelo Conceptual, Modelo Lógico 3FN en Silver y Modelo Dimensional en Gold (decisión de preservar categorías como ARRAY y no explotar tabla puente). | John Huerta |
+| **v0.5** | 22/09/2026 | M5 · Arquitectura Cloud | Especificación de la Arquitectura de Referencia ABB → SBB, justificación de alternativas descartadas y registro de ADR-01 (conteo de check-ins) y ADR-02 (rating bayesiano). | John Huerta |
+| **v1.0** | 06/10/2026 | M6 a M10 · Consolidación Final | Integración de trazabilidad con notebooks ejecutables (E3 a E8), bitácora FinOps de cómputo serverless y consultas SQL para Databricks AI/BI Dashboards. | Todo el equipo |
+| **v1.1** | 09/10/2026 | Evaluación Docente / Optimización | Incorporación de lineamientos de la Sesión 19 (grano explícito en Gold, segregación estricta de hechos atómicos y agregados, tabla de cohortes de retención), formalización de zona de cuarentena explícita en Silver (`slv_review_cuarentena`), incorporación de ADR-05 (Star Schema vs OBT) y ADR-06 (Dynamic Column Masking en Unity Catalog), y blindaje matemático de KPIs de Producto. | Profesor / Equipo Data Evolution |
+| **v1.2** | 09/10/2026 | Integración de Modelado Físico (Hackolade) | Integración del modelo de datos de Josuhe (Hackolade/Draw.io): incorporación de la entidad `Amistad` (`slv_amistad`) para analítica del Social Graph y engagement de usuarios, atributos de votos enviados de usuario (`useful_enviados`, etc.), localización detallada (`direccion`, `codigo_postal`) y campo `categoria_principal` en `gld_dim_negocio`. | Josuhe Sosa / Equipo Data Evolution |
+
+---
+
+## 1. Resumen Ejecutivo
+
+### 1.1. Contexto y Diagnóstico del Problema
+YelpConnect opera como el canal principal de interacción entre millones de comensales y negocios locales en más de 30 países. A pesar del éxito comercial de la plataforma, el crecimiento desarticulado de nuevas funciones (Yelp Ads, Waitlist y Reservations) provocó una profunda fractura informacional interna. 
+
+Desde la perspectiva del **VP de Producto, Andrew Collins**, la organización enfrentaba una crisis de confianza que amenazaba la experiencia de usuario y la tracción de la app: las métricas clave de salud del producto diferían sistemáticamente según el área que las consultara. Mientras el equipo de Producto calculaba una calificación promedio y retención con base en eventos sin depurar, Marketing reportaba aumentos de reseñas impulsados por duplicados de campañas, y Operaciones Comerciales inflaba la afluencia contabilizando cada marca temporal repetida de los check-ins para fines publicitarios (una brecha del 28% respecto a visitas reales). Además, la presencia de negocios con calificaciones extremas basadas en una sola reseña distorsionaba el motor de búsqueda, no existían *Data Owners* con responsabilidad legal y de negocio sobre las entidades maestras, los datasets carecían de linaje auditable, y el motor de machine learning de recomendaciones consumía fuentes sin versionamiento ni trazabilidad.
+
+### 1.2. Solución de Arquitectura Diseñada
+La Oficina de Arquitectura de Datos diseñó e implementó una plataforma moderna basada en el paradigma **Lakehouse Medallion** desplegada sobre **Databricks**, gobernada de extremo a extremo mediante **Unity Catalog**:
+1. **Capa Bronze (`workspace.yelp_bronze`):** Ingesta cruda, inmutable y orientada a eventos mediante **Databricks Auto Loader (`cloudFiles`)**, asegurando trazabilidad forense sin transformar el payload original y añadiendo metadatos de auditoría (`_ingestion_timestamp`, `_source_file`).
+2. **Capa Silver (`workspace.yelp_silver`):** Conformación en Tercera Forma Normal (3FN), tipificación de datos estricta, validación de esquemas y deduplicación determinística mediante sentencias `MERGE INTO` de Delta Lake. Se implementa una **zona de cuarentena explícita (`slv_review_cuarentena`)** para aislar registros no conformes sin frenar la continuidad operacional.
+3. **Capa Gold (`workspace.yelp_gold`):** Modelos dimensionales de consumo analítico bajo metodología Kimball cumpliendo los 12 lineamientos técnicos de la Sesión 19: estricta declaración de granularidad, hechos atómicos transaccionales (`gld_fact_resenas`), hechos agregados periódicos (`gld_kpi_negocio_mensual`), tabla de retención y engagement por cohortes (`gld_cohortes_retencion_mensual`) y dimensiones conformes (`gld_dim_negocio`, `gld_dim_usuario`, `gld_dim_tiempo`) con soporte a cambios históricos (SCD Tipo 1 y Tipo 2).
+4. **Gobierno Transversal (`workspace.yelp_gov`):** Marco normativo unificado donde residen las tablas de control institucional (`dq_reglas`, `dq_resultados`, `glosario_negocio`, `diccionario_datos`, `matriz_raci`), etiquetas de clasificación PII reales (`ALTER TABLE ... SET TAGS`) y políticas de control de acceso granular con enmascaramiento dinámico (*Dynamic Column Masking*).
+
+### 1.3. Resultados Construidos y Verificables
+* **Resolución de la Disputa de Check-ins:** Se adoptó un criterio de deduplicación horaria por usuario y negocio (ADR-01), erradicando al 100% la discrepancia entre la facturación de Yelp Ads y las métricas de visitas reales de Producto (discrepancia = 0.0%).
+* **Rating Promedio Ponderado Bayesiano:** Se implementó una fórmula estadística en Gold que neutraliza la distorsión de negocios con una sola reseña atípica mediante amortiguación bayesiana ($m=25$, $C=	ext{media global}$), entregando a Producto una métrica de satisfacción matemáticamente blindada.
+* **Calidad Observable Automatizada:** 12 reglas de negocio (`DQ-001` a `DQ-012`) cubriendo las seis dimensiones de calidad (6D) operan como *Quality Gates* automatizados en el pipeline, asegurando un cumplimiento superior al 98.5% con persistencia histórica en `yelp_gov.dq_resultados`.
+* **Cumplimiento y Privacidad por Diseño:** Anonimización y enmascaramiento dinámico de datos de usuarios (`name`, PII indirecta en textos) garantizando conformidad con RGPD, CPRA y la Ley N° 29733 (Perú), sin romper la capacidad analítica agregada.
+* **Eficiencia FinOps Demostrable:** Reducción del 70% en escaneo de archivos mediante particionado inteligente (`Z-ORDER BY business_id, date`) y confinamiento de la ejecución diaria a menos de 7 minutos (<25% de la cuota serverless).
+
+### 1.4. Recomendaciones Estratégicas Siguientes
+1. **Formalización de Contratos de Datos (Data Contracts):** Establecer acuerdos vinculantes entre los desarrolladores del backend/móvil de YelpConnect y la plataforma Lakehouse para prevenir rupturas silenciosas de esquemas operacionales.
+2. **Escalamiento a Nuevos Dominios de Negocio:** Extender la arquitectura hacia las fuentes transaccionales de *Yelp Reservations* y *Yelp Waitlist*, homologando el identificador maestro de usuario y negocio.
+3. **Analítica Avanzada de NLP sobre Texto Libre:** Operacionalizar el módulo `EX_bonus_ia` utilizando modelos de lenguaje integrados de Databricks (`ai_analyze_sentiment`, `ai_classify`) para categorizar automáticamente las razones cualitativas de insatisfacción en el producto (servicio, tiempos de espera, higiene).
+
+---
+
+## 2. Visión de Arquitectura y SoAW (Entregable E1)
+
+### 2.1. Sponsor y Contexto del Encargo
+* **Sponsor Ejecutivo:** **Laura Hernández (Chief Data Officer)**, con el co-patrocinio funcional prioritario de **Andrew Collins (VP of Product)**.
+* **Contexto de Urgencia:** Durante el cierre del segundo trimestre, la dirección de Producto planificaba el rediseño del algoritmo de recomendación y las insignias de fidelidad. Sin embargo, se constató que el 14% de las reseñas de negocios altamente calificados provenían de cuentas duplicadas o no verificadas, y que el conteo de afluencia difería en un 28% respecto a los datos reportados a los anunciantes. El comité ejecutivo suspendió el despliegue de producto hasta contar con una arquitectura de datos certificada.
+* **Consecuencia de la Inacción:** De no implementarse esta arquitectura, Yelp continuará sufriendo fuga de usuarios descontentos por recomendaciones inexactas, litigios comerciales con anunciantes por métricas infladas y multas regulatorias por manejo indebido de datos de privacidad.
+
+### 2.2. Stakeholders del Caso
+
+| Área | Stakeholder | Dolor actual | Qué espera obtener | Tensión cruzada con | Prioridad |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Producto (Prioritario)** | **Andrew Collins**, VP of Product | Métricas de satisfacción y rating poco confiables; imposibilidad de medir retención real de usuarios en YelpConnect. | Única versión de la verdad sobre interacción de usuarios, ratings ponderados certificados y vistas de engagement fidedignas. | Operaciones Comerciales / Marketing | **Alta** |
+| **Marketing & Growth** | Jessica Martínez, Director of Growth | Inconsistencia de métricas por duplicidad de registros generados en campañas masivas. | Atribución real de adquisición, detección de usuarios únicos y volumen neto de reseñas efectivas. | Trust & Safety | Media |
+| **Data Science & Analytics** | Mei Lin, Director of Data Science | Datasets sin linaje, sin metadatos y modelos de machine learning entrenados sobre fuentes no versionadas. | Capa conformada (Silver/Gold) con versionamiento histórico (*Time Travel*) y linaje observable para entrenamiento de modelos. | Infraestructura y Producto | Alta |
+| **Trust & Safety** | Rafael Nakamura, Head of Safety Operations | Imposibilidad de auditar el origen de reseñas fraudulentas; falta de trazabilidad en las reglas de mitigación de fraude. | Linaje de datos auditable desde la ingesta cruda y aislamiento de reseñas en cuarentena antes de impactar el rating público. | Marketing & Growth | Alta |
+| **Operaciones Comerciales (Ads)** | Carla Romero, Head of Ads Strategy | Conteo inconsistente de check-ins que distorsiona la facturación de campañas publicitarias. | Conteo uniforme y homologado de check-ins con granularidad temporal clara para el cobro a anunciantes. | Producto | Alta |
+| **Infraestructura y Datos (Platform)** | Laura Hernández, CDO | Fragmentación tecnológica en silos y ausencia absoluta de responsabilidad (*accountability*) sobre los datos. | Plataforma Lakehouse centralizada y gobernada con matriz RACI formalizada y políticas de seguridad Unity Catalog. | Todas las áreas operacionales | Alta |
+
+### 2.3. Motivadores del Negocio
+
+| ID | Motivador | Qué se pierde si no se atiende | Stakeholder que lo sostiene |
+| :--- | :--- | :--- | :--- |
+| **MOT-01** | **Consolidación de Métricas de Producto y Satisfacción:** Establecer una verdad única para la calificación de negocios y la actividad de usuarios. | Pérdida de usuarios activos por desconfianza en las recomendaciones; degradación del NPS corporativo y caída de cuota de mercado frente a competidores. | Andrew Collins (VP Product) |
+| **MOT-02** | **Accountability y Ownership Formal:** Asignar formalmente la propiedad de las entidades maestras de datos a líderes de negocio. | Continuación del caos informacional; nadie responde por la calidad, definiciones huérfanas y disputas operativas interminables. | Laura Hernández (CDO) |
+| **MOT-03** | **Depuración de Reseñas y Check-ins Duplicados:** Erradicar la duplicidad transaccional y el spam publicitario. | Pérdida de credibilidad de la plataforma ante los comercios afiliados y riesgo de demandas por cobros publicitarios inflados. | Carla Romero (Ads) / Andrew Collins |
+| **MOT-04** | **Trazabilidad y Linaje Auditable de Extremo a Extremo:** Demostrar el origen, transformaciones y reglas aplicadas a cada dato. | Incapacidad de defender cifras ante auditorías externas y degradación de modelos predictivos de Data Science. | Rafael Nakamura (Trust & Safety) / Mei Lin |
+| **MOT-05** | **Gobernanza Financiera y Eficiencia de Cómputo (FinOps):** Garantizar la viabilidad técnica y económica en entornos serverless. | Agotamiento prematuro de las cuotas diarias de cómputo en Databricks y sobrecostos presupuestarios desmedidos. | Laura Hernández (CDO) |
+
+### 2.4. Alcance del Proyecto
+
+| Dentro del alcance | Fuera del alcance | Por qué queda fuera |
+| :--- | :--- | :--- |
+| • Ingesta de las 5 fuentes transaccionales principales: `business`, `user`, `review`, `checkin`, `tip` (muestra acotada a una ciudad). | • Rediseño del código transaccional de la app móvil o el backend web de YelpConnect. | La Oficina de Arquitectura de Datos habilita y gobierna el consumo analítico; no altera el core operacional transaccional. |
+| • Modelado conceptual, lógico y físico Lakehouse en Unity Catalog (capas Bronze, Silver, Gold y Gov). | • Gestión y ejecución operativa de campañas publicitarias en Yelp Ads. | Corresponde al dominio operativo de Marketing; la plataforma únicamente entrega los productos analíticos de consumo. |
+| • Catálogo institucional de 12 reglas de calidad de datos (6D) y motor automatizado en PySpark/SQL operando como Quality Gates. | • Migración masiva de históricos superiores a 10 años en múltiples regiones cloud. | Restricción de cuota de Databricks Free Edition; el modelo se valida sobre una muestra territorial representativa (<300 MB). |
+| • Asignación formal de roles RACI, Glosario de Negocio (23 términos) y Diccionario de Datos (30 elementos técnicos). | • Entrenamiento y puesta en producción de modelos de deep learning de generación de texto. | Excede el objetivo fundacional del proyecto integrador; se habilita un prototipo NLP en el módulo bonus (`EX_bonus_ia`). |
+| • Definición de interfaces de Contratos de Datos (Data Contracts) y zona de cuarentena explícita en Silver. | • Conexión directa JDBC a bases de datos operacionales de producción sin pasar por Lakehouse. | Práctica de antipatrón que genera acoplamiento estrecho, saturación de transacciones y evasión del gobierno de datos. |
+| • Dashboard de BI para Producto y Gobierno en Databricks AI/BI y espacio semántico Genie. | • Despliegue de infraestructura IaaS permanente (clusters dedicados 24/7). | Contrario a las directrices FinOps de cómputo serverless bajo demanda. |
+
+### 2.5. Criterios de Éxito
+
+| ID | Criterio de éxito | Cómo se verifica | Motivador que atiende |
+| :--- | :--- | :--- | :--- |
+| **CE-01** | **Métricas Unificadas de Producto:** El 100% de los reportes de Producto y Operaciones consultan la misma tabla certificada (`gld_kpi_negocio_mensual`). | Verificación en el linaje de Unity Catalog: cero consultas a capas intermedias no autorizadas; discrepancia de métricas = 0.0%. | MOT-01, MOT-03 |
+| **CE-02** | **Ownership y RACI Formalizado:** El 100% de las entidades críticas y columnas gobernadas tienen un Data Owner y Steward asignado. | Inspección de la tabla `workspace.yelp_gov.diccionario_datos` y `matriz_raci`: cero atributos con campos de owner nulos. | MOT-02 |
+| **CE-03** | **Calidad Observable Automatizada:** Ejecución sistemática de las 12 reglas DQ con un umbral de cumplimiento global superior al 98.5%. | Consulta SQL sobre la tabla `workspace.yelp_gov.dq_resultados` tras la ejecución del pipeline programado. | MOT-03, MOT-04 |
+| **CE-04** | **Protección de Datos Personales (PII):** Cumplimiento total de enmascaramiento dinámico para atributos sensibles de usuarios. | Consulta con perfil de analista estándar sobre `slv_user`: los campos `name` y correos aparecen enmascarados vía tags de Unity Catalog. | MOT-04 |
+| **CE-05** | **Sostenibilidad Operativa FinOps:** El pipeline multi-tarea completo se ejecuta dentro de la cuota diaria de Databricks Free Edition sin cortes. | Auditoría de la tabla `workspace.yelp_gov.pipeline_control`: duración total < 8 minutos por corrida; consumo < 25% de la cuota diaria. | MOT-05 |
+| **CE-06** | **Disponibilidad y Reconciliación de Producto (SLA):** Tablas Gold actualizadas diariamente a las 05:00 UTC con reconciliación matemática estricta ($delta = 0$). | Ejecución del script de reconciliación en `gld_fact_resenas` vs `slv_review` sin discrepancias de suma. | MOT-01, MOT-05 |
+
+### 2.6. Restricciones y Supuestos
+
+| Tipo | Enunciado | Impacto en el diseño |
+| :--- | :--- | :--- |
+| **Restricción** | **Cuota Limitada de Cómputo Serverless:** El entorno de Databricks Free Edition cuenta con cuota diaria de DBU y un solo metastore por cuenta. | Obliga a muestrear geográficamente el dataset a una ciudad (< 300 MB), evitar operaciones de `display()` redundantes y diseñar pipelines estrictamente idempotentes. |
+| **Restricción** | **Inmutabilidad de Fuentes Transaccionales:** Los esquemas de origen JSON no pueden modificarse a nivel de producción. | El Lakehouse debe manejar esquemas semi-estructurados en Bronze y realizar el desempaquetado y tipificación en Silver mediante código. |
+| **Restricción** | **Restricciones de Claves no Enforzadas:** Unity Catalog declara `PRIMARY KEY` y `FOREIGN KEY` de forma informativa (no forzadas por el motor Delta). | La integridad referencial y unicidad física deben garantizarse programáticamente mediante reglas DQ específicas (`DQ-002`, `DQ-003`) y Quality Gates. |
+| **Supuesto** | **Adopción Organizacional:** Los líderes de área respetarán la gobernanza y consumirán exclusivamente desde la capa Gold. | El equipo de CDO implementará restricciones de permisos (`GRANT SELECT`) bloqueando el acceso de usuarios finales a Silver y Bronze. |
+| **Supuesto** | **Estabilidad Semántica:** El Glosario de Términos aprobado representa el acuerdo institucional definitivo sobre las métricas. | Cualquier cambio futuro en fórmulas o definiciones requerirá una solicitud formal de excepción y modificación del control de versiones. |
+
+---
+
+## 3. Arquitectura de Referencia (Entregable E2)
+
+### 3.1. Capacidades de Negocio
+
+| ID | Capacidad de negocio | Motivador que habilita | Área beneficiada |
+| :--- | :--- | :--- | :--- |
+| **CAP-01** | **Consolidación de Métricas de Experiencia de Usuario:** Publicar indicadores mensuales de rating, distribución de estrellas y volumen de opiniones con trazabilidad auditable. | MOT-01 | Producto, Marketing |
+| **CAP-02** | **Deduplicación y Depuración Transaccional:** Detectar y filtrar reseñas repetidas y check-ins simultáneos antes de propagar datos a analítica. | MOT-03 | Producto, Operaciones Comerciales |
+| **CAP-03** | **Evaluación Continua de Calidad de Datos:** Monitorear el apego a reglas de integridad, validez y completitud con alertas y Quality Gates. | MOT-02, MOT-04 | Trust & Safety, CDO |
+| **CAP-04** | **Enmascaramiento y Seguridad de Datos Personales:** Proteger la identidad de usuarios en reportes y paneles sin degradar el análisis agregado. | MOT-04 | Trust & Safety, Legal |
+| **CAP-05** | **Historiografía y Versionamiento Analítico:** Conservar la evolución temporal del comportamiento de negocios y estados operativos mediante Time Travel. | MOT-01, MOT-04 | Data Science, Producto |
+| **CAP-06** | **Autoservicio Semántico para Consumo de Producto:** Permitir consultas en lenguaje natural y dashboards ejecutivos basados en datos certificados. | MOT-01, MOT-05 | Producto, CDO |
+| **CAP-07** | **Observabilidad de Datos y Linaje de Métricas:** Demostrar el camino completo desde el evento JSON hasta el cálculo del KPI directivo. | MOT-02, MOT-04 | Data Platform, Auditoría |
+
+### 3.2. Bloques Arquitectónicos (ABB → SBB)
+
+| ABB (Bloque Abstracto) | Capacidad que habilita | SBB (Componente Concreto) | Alternativas descartadas y por qué |
+| :--- | :--- | :--- | :--- |
+| **Almacenamiento Analítico Columnar Versionado** | CAP-01, CAP-05 | **Tablas Delta Lake sobre Unity Catalog** (esquemas `yelp_bronze`, `yelp_silver`, `yelp_gold`) | • **Base de Datos Relacional (PostgreSQL):** Descartada por incapacidad de escalar a volúmenes masivos de datos no estructurados, altos costos de almacenamiento y falta de versionamiento histórico *Time Travel* nativo.<br>• **Data Lake Parquet tradicional (sin capa Delta):** Descartado por carecer de transacciones ACID, lo que provocaría lecturas corruptas ante escrituras concurrentes y la imposibilidad de ejecutar sentencias `MERGE INTO` de deduplicación. |
+| **Ingesta Idempotente y Desacoplada** | CAP-02 | **Databricks Auto Loader (`cloudFiles`)** sobre volúmenes de almacenamiento (`/Volumes/.../raw/`) | • **Cargas Batch JDBC directas:** Descartadas por generar sobrecarga y contención de bloqueos en la base transaccional de producción.<br>• **Scripts de copia manual (boto3/az copy):** Descartados por carecer de detección automática de nuevos archivos, evolución de esquemas y tolerancia a fallos. |
+| **Motor de Conformación y Procesamiento Distribuido** | CAP-01, CAP-02 | **Apache Spark (PySpark) Serverless** en Databricks Runtime | • **Procesamiento en memoria con Pandas:** Descartado por desbordamiento de memoria RAM ante crecimientos exponenciales de datos y falta de paralelismo distribuido.<br>• **Procedimientos Almacenados en SQL tradicional:** Descartados por carecer de control de versiones de software, trazabilidad CI/CD y capacidades de testing unitario. |
+| **Catálogo de Metadatos y Gobierno Centralizado** | CAP-03, CAP-04, CAP-07 | **Databricks Unity Catalog** (esquema tripartito: `catalogo.esquema.tabla`) | • **Hive Metastore clásico:** Descartado porque no soporta linaje automático a nivel de columna, ni tags de gobierno ni permisos RBAC con control granular centralizado.<br>• **Catálogo independiente desacoplado (DataHub / Apache Atlas):** Descartado por implicar costos adicionales de infraestructura y servidores dedicados incompatibles con las restricciones FinOps. |
+| **Motor de Calidad de Datos (Rules-as-Data)** | CAP-03 | **Framework Propietario `dq_reglas` + `dq_resultados`** ejecutado en PySpark/SQL como Quality Gate | • **Great Expectations independiente:** Descartado por requerir contenedores dedicados y configuración compleja en entornos universitarios serverless.<br>• **Aserciones ad-hoc dispersas en notebooks:** Descartadas por ser invisibles para auditoría corporativa y no permitir cálculo de métricas históricas de salud. |
+| **Orquestación de Pipelines Multi-tarea** | CAP-01, CAP-03 | **Databricks Workflows (Jobs DAG)** | • **Apache Airflow dedicado:** Descartado por requerir aprovisionamiento de infraestructura virtual (IaaS), administración de red y consumo permanente de recursos sin justificación de volumen. |
+| **Capa Semántica y Autoservicio de BI** | CAP-06 | **Databricks AI/BI Dashboards + Genie Space** | • **Servidor On-Premise de Power BI / Tableau:** Descartado por requerir pasarelas de enlace de datos (gateways), exportación masiva fuera de la nube y pago de licencias de usuario adicionales. |
+
+### 3.3. Vista de la Arquitectura
+
+```
+========================================================================================================================
+                          VISTA INTEGRAL DE LA ARQUITECTURA LAKEHOUSE (YELPCONNECT)
+========================================================================================================================
+
+  FUENTES OPERACIONALES                   CAPAS DEL LAKEHOUSE (DATABRICKS SERVERLESS)                     CONSUMO Y VALOR
+┌───────────────────────┐            ┌──────────────────────────────────────────────────┐            ┌─────────────────┐
+│ • YelpConnect Mobile  │            │  BRONZE (Ingesta Cruda - Append Only)            │            │                 │
+│ • Yelp Web Platform   │  Auto      │  • /Volumes/workspace/yelp_bronze/raw/           │            │  PRODUCTO       │
+│ • Yelp Ads Engine     │ ─────────► │  • brz_business, brz_review, brz_user, ...       │            │  • AI/BI Dash-  │
+│ • APIs de Partners    │   Loader   │    (Payload original + _metadata auditoría)      │            │    board        │
+└───────────────────────┘            └─────────────────────────┬────────────────────────┘            │  • Genie Space  │
+                                                               │                                     │  (Autoservicio) │
+                                                               ▼                                     └─────────────────┘
+                                     ┌──────────────────────────────────────────────────┐                     ▲
+                                     │  SILVER (Conformada, 3FN, Deduplicada)           │                     │
+                                     │  • slv_business   (Categorías ARRAY, Coords)     │                     │
+                                     │  • slv_review     (Deduplicada, Stars 1-5)       │                     │
+                                     │  • slv_user       (Antigüedad, Métricas)         │                     │
+                                     │  • slv_checkin    (Deduplicación horaria)        │                     │
+                                     │  • slv_tip        (Texto validado)               │                     │
+                                     │  ----------------------------------------------  │                     │
+                                     │  • slv_review_cuarentena (Datos No Conformes)    │                     │
+                                     └─────────────────────────┬────────────────────────┘                     │
+                                                               │                                              │
+                                                               ▼                                              │
+                                     ┌──────────────────────────────────────────────────┐                     │
+                                     │  GOLD (Kimball: Dimensional Estrella & KPIs)     │                     │
+                                     │  • gld_dim_negocio, gld_dim_usuario, dim_tiempo  │ ────────────────────┘
+                                     │  • gld_fact_resenas (Grano atómico de reseña)    │
+                                     │  • gld_kpi_negocio_mensual (Rating bayesiano)    │
+                                     │  • gld_cohortes_retencion_mensual (Engagement)   │
+                                     └──────────────────────────────────────────────────┘
+                                                               ▲
+                                                               │
+┌──────────────────────────────────────────────────────────────┴───────────────────────────────────────────────────────┐
+│                          FRANJA VERTICAL DE GOBIERNO TRANSVERSAL (UNITY CATALOG)                                     │
+│  • Glosario de Negocio (`yelp_gov.glosario_negocio`)        • Diccionario de Datos (`yelp_gov.diccionario_datos`)     │
+│  • Catálogo de Reglas DQ (`yelp_gov.dq_reglas`)            • Resultados de Calidad (`yelp_gov.dq_resultados`)        │
+│  • Matriz RACI y Roles (`yelp_gov.matriz_raci`)            • Dynamic Column Masking (Tags PII y Máscaras)            │
+│  • Control de Ejecución FinOps (`yelp_gov.pipeline_control`) • Linaje Automático de Extremo a Extremo                 │
+└───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+========================================================================================================================
+```
+
+**Descripción Arquitectónica:**
+El diseño implementa tres capas horizontales secuenciales sobre Delta Lake y una franja vertical de gobierno que las intersecta en su totalidad. En el plano horizontal, la capa **Bronze** almacena fielmente los eventos serializados en formato JSON sin ninguna alteración destructiva, agregando únicamente marcas temporales y fuentes de ingesta para trazabilidad forense; la capa **Silver** estandariza tipos de datos, filtra registros inválidos y resuelve duplicados mediante sentencias `MERGE INTO`, materializando entidades limpias bajo la Tercera Forma Normal. Crucialmente, Silver incorpora la tabla de **cuarentena (`slv_review_cuarentena`)** para aislar registros sospechosos o con fallas referenciales sin romper el pipeline. Finalmente, la capa **Gold** organiza los datos en modelos dimensionales de estrella y tablas de agregación optimizadas para el consumo de Producto.
+
+La franja vertical de **Gobierno y Unity Catalog** no constituye una etapa posterior del pipeline, sino un conjunto de políticas y metadatos activos aplicados en cada estrato del flujo. Desde esta franja se controlan los accesos por perfiles de usuario, se aplican máscaras dinámicas de datos confidenciales sobre atributos de usuarios, se rastrea el linaje gráfico a nivel de columna y se ejecutan los Quality Gates contra las tablas maestras de gobierno. De este modo, Andrew Collins y su equipo interactúan exclusivamente con productos de datos gobernados y certificados.
+
+### 3.4. Decisiones de Arquitectura (ADR)
+
+| ID | Decisión | Contexto y opciones evaluadas | Motivo de la elección | Estado |
+| :--- | :--- | :--- | :--- | :--- |
+| **ADR-01** | **Deduplicación de Check-ins por Ventana Horaria** | Origen transaccional entrega marcas concatenadas. Se evaluó deduplicar por día (propuesta de Producto original) o contabilizar cada timestamp (propuesta de Ads). | La deduplicación por hora (ventana de 60 min por usuario y comercio) elimina el ruido de rebotes técnicos sin destruir la señal de visitas reales múltiples, satisfaciendo tanto el cobro justo de Ads como el cálculo de retención de Producto. | **Vigente** |
+| **ADR-02** | **Cálculo de Rating Ponderado Bayesiano en Gold** | Producto sufría distorsión por comercios con 1 sola reseña de 5.0 estrellas que superaban a negocios consagrados con miles de calificaciones. Se evaluó promedio aritmético simple vs. media bayesiana. | Se adoptó la media bayesiana ponderada ($m=25$ reseñas mínimas, $C=$ media global de la ciudad) en `gld_kpi_negocio_mensual`. Garantiza estabilidad estadística y credibilidad al algoritmo de recomendaciones. | **Vigente** |
+| **ADR-03** | **Almacenamiento de Categorías como ARRAY en Silver** | Las categorías de los comercios llegan como cadenas delimitadas por comas. Se evaluó normalizar a una tabla puente relacional de muchos a muchos vs. deserializar a `ARRAY<STRING>` en Delta. | Se eligió `ARRAY<STRING>` nativo en Delta. Evita sobrecostos de almacenamiento y costosos joins en cómputo serverless; las funciones `array_contains` de PySpark/SQL resuelven eficientemente las consultas de Producto. | **Vigente** |
+| **ADR-04** | **Adopción de Delta Lake Time Travel para Auditoría** | Modificaciones y eliminaciones de reseñas por usuarios y moderadores borraban el rastro histórico. Se evaluó bitácora manual en base relacional vs. historial nativo de Delta. | Se habilitó la propiedad `delta.enableChangeDataFeed = true` y retención de 30 días de log Delta. Permite auditar el estado exacto de cualquier dato en cualquier punto del tiempo para respaldar decisiones de Trust & Safety y Producto. | **Vigente** |
+| **ADR-05** | **Esquema Dimensional Kimball en Gold vs Tablón OBT** | Se evaluó implementar un único tablón desnormalizado (One Big Table - OBT) frente a un esquema dimensional Kimball con hechos atómicos y dimensiones conformes. | Se adoptó el esquema estrella Kimball. Permite análisis flexible de retención (slicing & dicing por usuario, negocio y tiempo) sin incurrir en duplicidad masiva de almacenamiento, complementado por tablas de hechos agregados específicos. | **Vigente** |
+| **ADR-06** | **Enmascaramiento Dinámico de PII en Unity Catalog** | Se evaluó anonimizar destructivamente los nombres de usuarios en Silver vs enmascaramiento dinámico en tiempo de consulta. | Se adoptó *Dynamic Column Masking* mediante funciones de Unity Catalog (`workspace.yelp_gov.mascara_nombre`). Preserva el dato original para roles privilegiados (Trust & Safety) y enmascara para analistas de Producto. | **Vigente** |
+| **ADR-07** | **Retención de `business.attributes` y `hours` en Bronze (*Schema-on-Read*)** | En `brz_business`, el campo `attributes` es un `STRUCT` altamente disperso de 39 subcampos (28 de ellos con >65% de nulos, literales `u'...'` de Python 2 y diccionarios de 2° nivel serializados como texto). Se evaluó aplanarlo o crear una tabla EAV en Silver vs. mantenerlo en Bronze. | Se decidió conservar `attributes` y `hours` íntegros en `brz_business` (*Schema-on-Read* para exploraciones puntuales de Data Science) y excluirlos de `slv_business`. Ningún requerimiento (`REQ-01` a `REQ-06`) ni KPI de Producto los consume, cumpliendo el principio de minimización de datos (Sección 5.4) y ahorrando cómputo Serverless en Databricks Free Edition. | **Vigente** |
+
+---
+
+## 4. Modelo de Datos Conceptual y Lógico (Entregable E3)
+
+### 4.1. Modelo Conceptual
+
+```
+┌────────────────────────┐                    ┌────────────────────────┐
+│        USUARIO         │                    │        NEGOCIO         │
+├────────────────────────┤                    ├────────────────────────┤
+│ • user_id (PK)         │◄───(es amigo de)──►│ • business_id (PK)     │
+│ • name, review_count   │    [Amistad N:M]   │ • nombre, direccion    │
+│ • yelping_since, fans  │                    │ • ciudad, cod_postal   │
+│ • votos_enviados       │                    │ • estrellas, abierto   │
+└───────────┬────────────┘                    └───────────┬────────────┘
+            │                                             │
+            │ 1                                           │ 1
+            │                                             │
+            │              ┌────────────────┐             │
+            ├────────────► │    RESEÑA      │ ◄───────────┤
+            │ N            ├────────────────┤           N │
+            │              │ • review_id    │             │
+            │              │ • stars, text  │             │
+            │              │ • date, useful │             │
+            │              └────────────────┘             │
+            │                                             │
+            │              ┌────────────────┐             │
+            ├────────────► │      TIP       │ ◄───────────┤
+            │ N            ├────────────────┤           N │
+            │              │ • tip_id, text │             │
+            │              │ • date         │             │
+            │              └────────────────┘             │
+            │                                             │
+            │              ┌────────────────┐             │
+            ├────────────► │    CHECK-IN    │ ◄───────────┘
+            │ (visitas)    ├────────────────┤           N
+            │              │ • checkin_id   │
+            │              │ • date         │
+            │              └────────────────┘
+            │                                             │
+            │              ┌────────────────┐             │
+            └────────────► │      FOTO      │ ◄───────────┘
+              (multimedia) ├────────────────┤           N
+                           │ • photo_id     │
+                           │ • caption      │
+                           └────────────────┘
+```
+
+| Entidad | Definición de negocio | Dominio | Relaciones principales |
+| :--- | :--- | :--- | :--- |
+| **Negocio** | Establecimiento comercial registrado en YelpConnect receptor de interacciones y opiniones. | Negocio | Tiene N Reseñas, recibe N Tips y acumula N Check-ins. |
+| **Usuario** | Individuo registrado en YelpConnect facultado para opinar, visitar y evaluar establecimientos. | Usuario | Publica N Reseñas, registra N Tips y genera N Check-ins. |
+| **Reseña** | Acto formal de valoración que combina una calificación numérica (1-5) y un texto libre argumentativo. | Contenido | Pertenece a 1 Usuario y evalúa a 1 Negocio. |
+| **Check-in** | Marca de afluencia física o presencia confirmada de un usuario en las instalaciones del negocio. | Interacción | Vinculado a 1 Negocio en una marca temporal dada. |
+| **Tip** | Recomendación o consejo breve publicado por un usuario sobre un aspecto puntual del negocio. | Contenido | Emitido por 1 Usuario hacia 1 Negocio. |
+| **Foto** | Elemento multimedia cargado por usuarios para ilustrar productos o instalaciones del negocio. | Contenido | Asociado a 1 Negocio y capturado por 1 Usuario. |
+| **Amistad (Red Social)** | Vínculo bidireccional entre dos usuarios de la plataforma que habilita el Social Graph y la confianza en recomendaciones. | Interacción / Red | Relaciona a 1 Usuario con N Usuarios amigos (`user_id_1` ↔ `user_id_2`). |
+
+### 4.2. Modelo Lógico y Decisiones de Normalización
+En la capa **Silver**, el modelo se mantiene estrictamente en **Tercera Forma Normal (3FN)**:
+1. **Normalización Atómica:** Toda columna no dependiente de la clave primaria fue relocalizada en su entidad de origen. Las tablas `slv_review`, `slv_user`, `slv_business`, `slv_checkin` y `slv_tip` presentan granularidad única y atómica.
+2. **Claves Primarias y Foráneas:** Se declaran restricciones informativas en Unity Catalog (`CONSTRAINT pk_review PRIMARY KEY (review_id)`, `CONSTRAINT fk_review_business FOREIGN KEY (business_id) REFERENCES slv_business(business_id)`). Aunque Delta Lake no aborta transacciones por violación de claves foráneas, estas restricciones habilitan al optimizador Catalyst para simplificar planes de ejecución y construir el linaje automático en el catálogo.
+3. **Restricciones Enforzadas:** Se configuran cláusulas `CHECK (stars BETWEEN 1 AND 5)` y `NOT NULL` sobre identificadores y calificaciones, garantizando que registros anómalos sean rechazados en el motor.
+4. **Evolución de Categorías (De Tabla Puente a Arreglo Nativo Delta):** En la fase inicial de modelado (planteada en Hackolade por Josuhe), las categorías se estructuraron bajo una normalización pura con catálogo `slv_categoria` y tabla puente N:M `slv_negocio_categoria`. No obstante, en la arquitectura Lakehouse sobre Databricks Free Edition, esta separación provocaba costosos *shuffle joins* y multiplicaba las filas procesadas. Mediante **ADR-03**, se consolidó el almacenamiento como `ARRAY<STRING>` nativo en `slv_business`, optimizando la cuota FinOps sin perder fidelidad.
+5. **Red Social y Votos Comunitarios en Silver:** Se formaliza la tabla relacional `slv_amistad` (`user_id_1`, `user_id_2`) para almacenar el grafo de contactos de los comensales, y se incorporan en `slv_usuario` las métricas de participación altruista (`useful_enviados`, `funny_enviados`, `cool_enviados`) modeladas en Hackolade, clave para los análisis de engagement de Andrew Collins. Asimismo, `slv_negocio` se enriquece con `direccion` y `codigo_postal` para filtros locales.
+6. **Zona de Cuarentena:** Se crea `slv_review_cuarentena` con el mismo esquema de reseñas más columnas de auditoría forense (`motivo_rechazo STRING`, `fecha_rechazo TIMESTAMP`) para aislar datos no conformes sin detener la operación diaria.
+7. **Exclusión Deliberada de Estructuras Anidadas Dispersas (`business.attributes` y `hours` — ADR-07):** El perfilado sobre los 14,577 negocios de la muestra demostró que `attributes` contiene 39 subcampos opcionales dependientes del giro comercial (24 booleanos en texto, 8 categóricos con residuos de serialización Python 2 como `"u'free'"` y 7 diccionarios anidados serializados como cadenas con comillas simples como `BusinessParking` y `Ambience`), donde 28 de los 39 atributos superan el 65% de nulidad. Dado que ningún requerimiento de información (`REQ-01` a `REQ-06`) ni KPI de negocio los utiliza, ambos objetos (`attributes` y `hours`) se preservan sin pérdida en `workspace.yelp_bronze.brz_business` bajo enfoque *Schema-on-Read* y no se promueven a `slv_business`, evitando tablas EAV o columnas dispersas que penalizarían la cuota diaria de Databricks Free Edition.
+
+### 4.3. Estrategia Dimensional para la Capa Gold (Kimball)
+Cumpliendo rigurosamente los 12 lineamientos de la Sesión 19 ("Lineamientos Técnicos Gold"):
+
+| Tabla Gold | Tipo | Declaración Explícita del Grano | Dimensiones asociadas | Tratamiento de historia |
+| :--- | :--- | :--- | :--- | :--- |
+| **`gld_fact_resenas`** | Hecho Transaccional Atómico | **Un registro por reseña individual aprobada por calidad emitida por un usuario hacia un negocio en un timestamp determinado.** | `dim_negocio`, `dim_usuario`, `dim_tiempo` | Inmutable; correcciones o eliminaciones se gestionan mediante inserción de eventos compensatorios o marcas de auditoría. |
+| **`gld_kpi_negocio_mensual`** | Hecho Agregado Periódico | **Un registro por negocio y mes calendario.** | `dim_negocio`, `dim_tiempo` | Acumula métricas mensuales pre-calculadas: rating aritmético, rating bayesiano ($BWR$), volumen de reseñas, usuarios únicos y check-ins deduplicados. |
+| **`gld_cohortes_retencion_mensual`** | Hecho Agregado Periódico | **Un registro por cohorte de registro de usuario (año-mes de `yelping_since`) y mes de actividad.** | `dim_tiempo` | Permite el cálculo inmediato de la tasa de retención de cohortes ($CRR$) y stickiness ($DAU/MAU$) para Andrew Collins. |
+| **`gld_dim_negocio`** | Dimensión Conforme | **Un registro por establecimiento comercial local.** | N/A | Incorpora `categoria_principal: STRING` (para simplificar análisis directo en BI) y `categorias: ARRAY<STRING>`. **SCD Tipo 1** para corrección de nombres y categorías; **SCD Tipo 2** para cambios en estado operativo (`esta_abierto`) y ubicación (con columnas `fecha_inicio_vigencia`, `fecha_fin_vigencia`, `es_actual`). |
+| **`gld_dim_usuario`** | Dimensión Conforme | **Un registro por comensal registrado en la plataforma.** | N/A | **SCD Tipo 1** para métricas acumuladas (`useful`, `funny`, `cool`); **SCD Tipo 2** para cambios de categoría Élite (`elite_status`). |
+| **`gld_dim_tiempo`** | Dimensión Conforme | **Un registro por fecha calendario (año, mes, trimestre, día de semana).** | N/A | Estática; generada programáticamente mediante secuencia de fechas. |
+
+### 4.4. Trazabilidad Conceptual → Lógico → Físico
+
+| Entidad conceptual | Entidad lógica (Silver 3FN) | Tabla física en Unity Catalog | Claves de Enlace |
+| :--- | :--- | :--- | :--- |
+| **Negocio** | `BUSINESS (business_id, nombre, direccion, ciudad, estado, codigo_postal, lat, lon, estrellas, categorías)` | `workspace.yelp_silver.slv_business` | Natural Key: `business_id` |
+| **Usuario** | `USER (user_id, name, review_count, yelping_since, average_stars, fans, useful_enviados, ...)` | `workspace.yelp_silver.slv_user` | Natural Key: `user_id` |
+| **Amistad (Red Social)** | `AMISTAD (user_id_1, user_id_2)` | `workspace.yelp_silver.slv_amistad` | Composite PK: `(user_id_1, user_id_2)` |
+| **Reseña** | `REVIEW (review_id, user_id, business_id, stars, text, date, useful, funny)` | `workspace.yelp_silver.slv_review` | Natural Key: `review_id` |
+| **Check-in** | `CHECKIN (checkin_id, business_id, date_hour, event_count)` | `workspace.yelp_silver.slv_checkin` | Natural Key: `checkin_id` |
+| **Tip** | `TIP (tip_id, user_id, business_id, text, date, compliment_count)` | `workspace.yelp_silver.slv_tip` | Natural Key: `tip_id` |
+| **Dimensión Negocio** | `DIM_NEGOCIO (business_sk, business_id, nombre, ciudad, estado, esta_abierto, es_actual)` | `workspace.yelp_gold.gld_dim_negocio` | Surrogate: `business_sk` |
+| **Dimensión Usuario** | `DIM_USUARIO (user_sk, user_id, name_masked, yelping_since, es_elite)` | `workspace.yelp_gold.gld_dim_usuario` | Surrogate: `user_sk` |
+| **Hechos Reseñas** | `FACT_RESENAS (review_sk, business_sk, user_sk, date_sk, stars, text_len, useful)` | `workspace.yelp_gold.gld_fact_resenas` | FKs a dimensiones |
+| **KPIs Producto** | `KPI_NEGOCIO_MENSUAL (business_sk, mes_sk, avg_stars, bayes_stars, n_resenas, checkins)` | `workspace.yelp_gold.gld_kpi_negocio_mensual` | Composite SKs |
+| **Cohortes Engagement** | `COHORTES_RETENCION (cohorte_sk, mes_actividad_sk, usuarios_base, usuarios_activos, retencion_pct)` | `workspace.yelp_gold.gld_cohortes_retencion_mensual` | Composite SKs |
+
+---
+
+## 5. Estrategia de Gobierno y Matriz RACI (Entregable E6)
+
+### 5.1. Modelo de Roles de Gobierno
+Siguiendo las directrices del marco DAMA-DMBOK 2:
+* **Data Owner (Dueño de Negocio):** Responsable máximo ante el comité ejecutivo del significado, clasificación, calidad y uso permitido de los datos de su dominio. Aprueba definiciones del glosario y asume riesgos residuales. En YelpConnect:
+  - **Andrew Collins (VP Product):** Owner de los Dominios **Negocio** y **Contenido** (incluye Reseñas, Tips y Calificaciones).
+  - **Rafael Nakamura (Trust & Safety):** Owner del Dominio **Datos Personales y Seguridad**.
+  - **Carla Romero (Ads):** Owner del Dominio **Interacción y Publicidad** (Check-ins y Facturación).
+* **Data Steward (Custodio Funcional):** Líder operativo que define reglas de calidad de datos, documenta diccionarios, verifica linaje y atiende solicitudes de acceso. Se nombran Stewards de Producto, T&S y Privacidad.
+* **Data Custodian (Custodio Técnico):** Equipo de Data Platform responsable de la infraestructura cloud, ejecución de pipelines, despliegue de esquemas y disponibilidad del Lakehouse.
+* **Consumidor de Datos:** Analistas de Producto, Científicos de Datos y Líderes Ejecutivos autorizados a consultar tablas certificadas en Gold.
+
+### 5.2. Matriz RACI por Entidad
+
+| Entidad | Definir significado | Aprobar accesos | Operar calidad | Sostener infraestructura |
+| :--- | :--- | :--- | :--- | :--- |
+| **Negocio** | **A:** Andrew Collins (Producto)<br>**R:** Steward de Producto | **A:** Andrew Collins<br>**C:** Operaciones Comerciales | **R:** Steward de Producto<br>**I:** Laura Hernández (CDO) | **R:** Data Platform<br>**A:** Data Custodian |
+| **Reseña** | **A:** Andrew Collins (Producto)<br>**R:** Steward de Producto / T&S | **A:** Andrew Collins<br>**C:** Rafael Nakamura (T&S) | **R:** Steward de T&S y Producto<br>**I:** Laura Hernández | **R:** Data Platform<br>**A:** Data Custodian |
+| **Usuario** | **A:** Rafael Nakamura (T&S)<br>**R:** Steward de Privacidad | **A:** Rafael Nakamura<br>**C:** Legal / Andrew Collins | **R:** Steward de Privacidad<br>**I:** Andrew Collins | **R:** Data Platform<br>**A:** Data Custodian |
+| **Check-in** | **A:** Carla Romero (Ads)<br>**R:** Steward de Interacción | **A:** Carla Romero<br>**C:** Andrew Collins (Producto) | **R:** Steward de Interacción<br>**I:** Andrew Collins | **R:** Data Platform<br>**A:** Data Custodian |
+| **Tip** | **A:** Andrew Collins (Producto)<br>**R:** Steward de Producto | **A:** Andrew Collins<br>**C:** Trust & Safety | **R:** Steward de Producto<br>**I:** CDO | **R:** Data Platform<br>**A:** Data Custodian |
+| **Foto** | **A:** Andrew Collins (Producto)<br>**R:** Steward de Producto / T&S | **A:** Andrew Collins<br>**C:** Trust & Safety | **R:** Steward de T&S<br>**I:** Data Platform | **R:** Data Platform<br>**A:** Data Custodian |
+
+### 5.3. Política de Clasificación de Datos
+
+| Nivel | Definición en el caso | Controles exigidos | Ejemplo de dato |
+| :--- | :--- | :--- | :--- |
+| **Público** | Dato abierto visible en la ficha pública de YelpConnect. Sin impacto de confidencialidad. | Sin restricciones de lectura; auditado en cambios y versionado. | Nombre comercial del negocio, ciudad, estrellas promedio publicadas. |
+| **Interno** | Datos operativos para uso exclusivo de colaboradores de Yelp. | Acceso mediante grupos de Unity Catalog (`grp_producto`, `grp_marketing`). Prohibida exportación no autorizada. | IDs técnicos, flags de procesamiento (`fecha_carga`), conteo de fans de usuarios. |
+| **Confidencial** | Información sensible cuyo compromiso impacta decisiones comerciales o modelos analíticos. | Acceso restringido por rol estricto; cifrado en reposo y tránsito; auditoría de consultas. | Métricas brutas de facturación publicitaria, algoritmos de detección de spam, reglas internas de moderación. |
+| **Restringido / PII** | Información de Identificación Personal protegida por leyes internacionales de privacidad. | **Enmascaramiento dinámico**, tags `confidencialidad = 'PII'` en Unity Catalog; acceso exclusivo para Trust & Safety. | Nombre de pila del usuario (`name`), correo electrónico, coordenadas exactas no agregadas. |
+
+### 5.4. Marco Normativo Aplicable
+
+| Norma | Qué exige sobre los datos del caso | Dónde se cumple en la plataforma |
+| :--- | :--- | :--- |
+| **RGPD (UE) 2016/679** | • **Minimización de Datos (Art. 5):** No almacenar datos sin finalidad analítica explícita.<br>• **Derecho de Supresión (Art. 17):** Habilitar borrado de usuarios mediante Time Travel e instrucciones `DELETE`/`MERGE`. | Retención de 36 meses configurada en el Diccionario de Datos; seudonimización de `user_id`; enmascaramiento dinámico de nombres. |
+| **CCPA / CPRA (California)** | • Prohibición de venta de datos personales sin consentimiento (*Do Not Sell My Info*).<br>• Transparencia y derecho a auditar datos retenidos. | Gobernanza de permisos en Unity Catalog; bloqueo absoluto de extracción de datos personales en bruto a partners comerciales. |
+| **Ley N° 29733 (Perú)** | • Principio de consentimiento y seguridad en el tratamiento de bancos de datos personales. | Almacenamiento seguro en esquemas gobernados con control de auditoría en `yelp_gov.pipeline_control`. |
+| **Políticas Internas de Yelp** | • Prohibición de uso de reseñas en cuarentena para fines comerciales o publicidad dirigida. | Aislamiento preventivo de registros que incumplen reglas DQ hacia tablas de cuarentena en Silver antes de publicar en Gold. |
+
+### 5.5. Proceso de Gestión de Excepciones y SLAs de Gobernanza
+1. **Solicitud Formal:** El colaborador que requiera una excepción de acceso temporal o modificación de regla registra un ticket ante el Data Steward del dominio correspondiente, justificando el propósito analítico y la duración.
+2. **Evaluación de Alternativas (SLA: 24 horas):** El Data Steward verifica si existe una vista o producto certificado en la capa Gold que satisfaga la necesidad sin exponer datos en crudo. Si existe, la solicitud se canaliza a través de dicha tabla y se cierra.
+3. **Aprobación del Data Owner (SLA: 48 horas):** Si no existe alternativa técnica, la solicitud es elevada a **Andrew Collins** (o al Owner respectivo), quien evalúa el riesgo y aprueba o rechaza formalmente la excepción.
+4. **Registro con Caducidad Obligatoria:** Toda excepción aprobada se registra en la bitácora institucional con una fecha límite de vencimiento (máximo 30 días calendario) y es revocada de manera automática por scripts de gobernanza.
+
+---
+
+## 6. Reglas de Calidad en Lenguaje de Negocio (Entregable E5)
+
+### 6.1. Dimensiones de Calidad Adoptadas
+
+| Dimensión | Qué significa en YelpConnect | Por qué importa al negocio (Impacto en Producto) |
+| :--- | :--- | :--- |
+| **Validez** | Que los datos numéricos y categóricos se ubiquen dentro de los rangos válidos del dominio de negocio. | Si un rating tiene 0 estrellas o 6 estrellas, distorsiona completamente el promedio y corrompe los algoritmos de recomendación. |
+| **Unicidad** | Que cada transacción o entidad se registre exactamente una sola vez sin duplicidades de clave. | Duplicados inflan artificialmente la popularidad de comercios y alteran las métricas de engagement mensual. |
+| **Integridad Referencial** | Que toda relación entre entidades apunte a un registro padre existente y consistente. | Reseñas huérfanas sin negocio o sin usuario asignado representan datos basura que no pueden presentarse en la app móvil. |
+| **Completitud** | Que los atributos críticos obligatorios posean valores no nulos. | Comercios sin nombre o sin ciudad no pueden ser indexados en búsquedas geográficas de los usuarios. |
+| **Consistencia** | Que no existan contradicciones lógicas entre atributos dependientes de una misma entidad. | Un comercio cerrado (`esta_abierto = FALSE`) no debería recibir reseñas recientes de actividad activa. |
+| **Actualidad** | Que las marcas temporales reflejen hechos ocurridos en periodos cronológicamente plausibles. | Marcas de tiempo en el futuro o fechas anteriores al lanzamiento de Yelp indican fallos severos de sincronización. |
+
+### 6.2. Catálogo de Reglas de Calidad de Datos
+
+| ID | Regla en lenguaje de negocio | Expresión Técnica SQL | Entidad | Dimensión | Criticidad | Umbral | Decisión si no se cumple (Quality Gate) |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **DQ-001** | La calificación de toda reseña debe ubicarse estrictamente entre 1 y 5 estrellas. | `stars BETWEEN 1.0 AND 5.0` | Reseña | Validez | **Alta** | 100.0% | Registro enviado a `slv_review_cuarentena`; no se propaga a Gold; alerta al Steward de Producto. |
+| **DQ-002** | No pueden existir reseñas duplicadas con el mismo identificador único de reseña. | `review_id IS NOT NULL` (Deduplicación única) | Reseña | Unicidad | **Alta** | 100.0% | Se conserva la versión más reciente en Silver mediante deduplicación `ROW_NUMBER()`; log de duplicados. |
+| **DQ-003** | Toda reseña debe estar asociada a un negocio formalmente registrado en la base de datos. | `business_id IN (SELECT business_id FROM slv_business)` | Reseña | Integridad | **Alta** | 99.5% | Huérfanas enviadas a cuarentena; tolerancia de 0.5% por bajas comerciales asíncronas. |
+| **DQ-004** | Toda reseña debe estar asociada a un usuario registrado en YelpConnect. | `user_id IN (SELECT user_id FROM slv_user)` | Reseña | Integridad | **Alta** | 99.5% | Huérfanas aisladas en cuarentena para revisión de cuentas borradas bajo RGPD. |
+| **DQ-005** | Todo negocio debe contar con un nombre comercial y una ciudad de ubicación no nulos. | `nombre IS NOT NULL AND ciudad IS NOT NULL` | Negocio | Completitud | **Alta** | 100.0% | El comercio no se publica en Gold hasta que Operaciones subsane los campos vacíos. |
+| **DQ-006** | Las coordenadas geográficas de un comercio deben ser válidas (-90 a 90 latitud, -180 a 180 longitud). | `latitud BETWEEN -90 AND 90 AND longitud BETWEEN -180 AND 180` | Negocio | Validez | Media | 99.0% | Negocios con coordenadas inválidas se excluyen de búsquedas espaciales en la app móvil. |
+| **DQ-007** | La fecha de una reseña no puede ser futura ni anterior a la fundación de Yelp (2004). | `fecha_resena >= '2004-01-01' AND fecha_resena <= current_timestamp()` | Reseña | Actualidad | **Alta** | 100.0% | Reseña descartada automáticamente por fallo de sincronización horaria en el cliente móvil. |
+| **DQ-008** | El identificador de usuario (`user_id`) no puede repetirse en la tabla de usuarios. | `user_id IS NOT NULL` (Conteo distinct) | Usuario | Unicidad | **Alta** | 100.0% | Se consolida el perfil más antiguo con histórico; alerta técnica a Data Platform. |
+| **DQ-009** | Todo check-in debe pertenecer a un comercio existente en el catálogo de negocios. | `business_id IN (SELECT business_id FROM slv_business)` | Check-in | Integridad | **Alta** | 99.5% | Marcas huérfanas aisladas; no computan para afluencia ni para cobro publicitario. |
+| **DQ-010** | El texto de una reseña no puede ser nulo ni estar compuesto únicamente de espacios en blanco. | `length(trim(texto)) > 0` | Reseña | Completitud | Media | 98.0% | Reseñas vacías marcadas con flag de baja calidad; computan rating pero no en feeds sociales. |
+| **DQ-011** | La fecha de registro de un usuario (`yelping_since`) no puede ser posterior a su primera reseña. | `yelping_since <= fecha_primera_resena` | Usuario | Consistencia | Media | 99.0% | Se ajusta la fecha de registro a la marca temporal de la primera transacción histórica. |
+| **DQ-012** | La calificación promedio de un negocio debe coincidir con el promedio de sus reseñas activas (±0.15). | `abs(estrellas - avg_estrellas_calculado) <= 0.15` | Negocio | Consistencia | **Alta** | 98.5% | Se recalcula el promedio en Silver y se emite ticket de auditoría por posible desfase de sync. |
+
+### 6.3. Justificación de Umbrales de Calidad
+* **Umbral de 100.0% (`DQ-001`, `DQ-002`, `DQ-005`, `DQ-007`, `DQ-008`):** Se exige el 100% en reglas donde cualquier violación representa una imposibilidad matemática o un error corruptor del sistema. Una calificación de 7 estrellas o una clave duplicada destruyen la integridad analítica y no pueden tolerarse bajo ningún estándar.
+* **Umbral de 99.5% (`DQ-003`, `DQ-004`, `DQ-009`):** Se admite una brecha marginal del 0.5% debido a desfases temporales asíncronos entre la ingesta de transacciones en streaming y el lote diario de actualización de catálogos de negocios o eliminaciones de cuentas bajo RGPD. El Data Owner asume este riesgo operativo residual.
+* **Umbral de 98.0% - 98.5% (`DQ-010`, `DQ-012`):** Margen asignado a atributos descriptivos donde variaciones menores no comprometen la operación global pero requieren supervisión continua.
+
+---
+
+## 7. Requerimientos de Información y KPIs (Entregable E8)
+
+### 7.1. Preguntas de Negocio por Stakeholder (Foco: Producto)
+
+| ID | Pregunta de negocio | Stakeholder que la formula | Decisión que habilita | Frecuencia |
+| :--- | :--- | :--- | :--- | :--- |
+| **REQ-01** | ¿Cómo evoluciona mensualmente la distribución de calificaciones y el rating promedio por categoría de negocio en cada ciudad? | **Andrew Collins (VP Product)** | Priorizar mejoras en las categorías comerciales con degradación de satisfacción y rediseñar filtros de búsqueda. | Mensual |
+| **REQ-02** | ¿Cuál es el top de negocios locales con mayor fidelidad y retención de usuarios activos medidos a través de visitas recurrentes (check-ins)? | **Andrew Collins (VP Product)** | Crear programas de reconocimiento e insignias oficiales de "Comercio Recomendado" en YelpConnect. | Trimestral |
+| **REQ-03** | ¿Qué porcentaje de reseñas son descartadas o enviadas a cuarentena por sospecha de duplicidad o fraude y cómo afecta esto a la reputación pública? | **Andrew Collins** / Rafael Nakamura | Ajustar los umbrales del algoritmo de moderación automática sin perjudicar a los comercios honestos. | Semanal |
+| **REQ-04** | ¿Cuál es la tasa de retención de cohortes de usuarios según el año de registro (`yelping_since`) y su volumen de interacción anual? | **Andrew Collins (VP Product)** | Evaluar la salud de la comunidad de comensales y el engagement a largo plazo de la plataforma. | Mensual |
+| **REQ-05** | ¿Cuál es la discrepancia matemática entre los check-ins contabilizados para cobro de Yelp Ads y las visitas reales estimadas por Producto? | **Andrew Collins** / Carla Romero | Conciliar la política comercial con la fidelidad analítica de retención para evitar litigios comerciales. | Mensual |
+| **REQ-06** | ¿Qué comercios presentan un volumen significativo de reseñas negativas asociadas a tiempos de espera o servicio según el análisis textual? | **Andrew Collins (VP Product)** | Diseñar herramientas operativas de asistencia y analítica interna para dueños de negocios afiliados. | Quincenal |
+
+### 7.2. Definición de KPIs
+
+| KPI | Fórmula en lenguaje de negocio | Términos del glosario que usa | Requerimiento que atiende |
+| :--- | :--- | :--- | :--- |
+| **Rating Promedio Ponderado Bayesiano (BWR)** | $$BWR = rac{v \cdot R + m \cdot C}{v + m}$$<br>Donde $v =$ cantidad de reseñas del negocio, $R =$ promedio aritmético simple, $m = 25$ (umbral mínimo de credibilidad), $C =$ calificación promedio global de la categoría/ciudad. | Calificación, Reseña Válida, Negocio, Rating Bayesiano | **REQ-01** |
+| **Tasa de Crecimiento Neto de Reseñas (NRG)** | $$NRG = rac{	ext{Reseñas Válidas Mes Actual} - 	ext{Reseñas Válidas Mes Anterior}}{	ext{Reseñas Válidas Mes Anterior}} 	imes 100$$ | Reseña Verificada, Reseña en Cuarentena | **REQ-01**, **REQ-03** |
+| **Índice de Afluencia Homologada (HAI)** | Suma de Check-ins Válidos deduplicados por usuario y ventana móvil de 60 minutos por comercio en el periodo evaluado. | Check-in Válido, Visita Confirmada | **REQ-02**, **REQ-05** |
+| **Ratio de Salud de Calidad de Reseñas (RHR)** | $$RHR = rac{	ext{Reseñas que superan 100\% de reglas DQ}}{	ext{Total de Reseñas Ingresadas en Bronze}} 	imes 100$$ | Regla DQ, Cuarentena, Salud de Datos | **REQ-03** |
+| **Tasa de Retención de Cohortes (CRR)** | $$CRR_t = rac{	ext{Usuarios de la Cohorte } C_0 	ext{ con } \ge 1 	ext{ interacción en el mes } t}{	ext{Total de usuarios registrados en la Cohorte } C_0} 	imes 100$$ | Usuario Activo, Cohorte, Interacción | **REQ-04** |
+| **Ratio de Stickiness (Engagement Diario/Mensual)** | $$	ext{Stickiness} = rac{DAU}{MAU} 	imes 100$$<br>Donde $DAU =$ Usuarios Únicos Activos Diarios, $MAU =$ Usuarios Únicos Activos Mensuales. | Usuario Activo, Interacción, Engagement | **REQ-04** |
+| **Índice de Utilidad Comunitaria (CUR)** | $$CUR = rac{\sum (	ext{useful} + 	ext{funny} + 	ext{cool})}{	ext{Total de Reseñas Publicadas}}$$ | Reseña Útil, Voto de Interacción | **REQ-02**, **REQ-06** |
+
+---
+
+## 8. Modelo Operativo y Consideraciones FinOps
+
+### 8.1. Cadencia de Ejecución y Responsables
+
+| Proceso | Frecuencia | Responsable | Qué hacer si falla (Protocolo de Contingencia) |
+| :--- | :--- | :--- | :--- |
+| **Ingesta Bronze (`01_bronze_ingesta`)** | Diaria, 01:00 UTC | Ingeniero/a de Datos de guardia (Data Platform) | Reintento automático a los 10 min. Si falla tras 2 reintentos, notificación vía webhook a Slack/Teams y ejecución manual prioritaria; Bronze no bloquea las capas superiores del día previo. |
+| **Conformación Silver (`02_silver_limpieza`)** | Diaria, 02:00 UTC | Ingeniero/a de Datos de guardia | Comprobación de integridad de esquema en Auto Loader. Revertir a la versión Delta previa mediante Time Travel (`RESTORE`) y re-procesar lote anómalo. |
+| **Evaluación de Calidad (`01_reglas_calidad`)** | Diaria, 03:00 UTC | Steward de Producto / Data Platform | Si el cumplimiento cae por debajo del 95%, el pipeline aborta la publicación a Gold (Quality Gate activo) y envía reporte de anomalías al Data Owner (Andrew Collins). |
+| **Publicación Gold (`03_gold_productos_datos`)** | Diaria, 04:00 UTC | Ingeniero/a de Datos de guardia | Validación de reconciliación matemática (la suma de hechos en Gold debe cuadrar al 100% con Silver). Si hay desfase, se cancela la recarga de vistas y se investiga. |
+| **Actualización de BI (`01_consultas_base`)** | Diaria, 05:00 UTC | Analista de BI y Valor | Monitoreo de disponibilidad del catálogo. Refresco automático de cachés en Databricks AI/BI Dashboards antes del inicio de la jornada laboral. |
+
+### 8.2. Supuestos y Bitácora de Consumo FinOps
+
+| Fecha | Actividad ejecutada | Consumo observado | Decisión de ahorro tomada |
+| :--- | :--- | :--- | :--- |
+| **14/09/2026** | Primera corrida completa del pipeline sobre el dataset completo de Yelp (10 GB). | **Crítico:** Se consumió el 90% de la cuota diaria de cómputo serverless en una sola ejecución. | Se acotó la muestra territorial a una única ciudad representativa (< 300 MB) preservando integridad referencial con el script `preparar_muestra_yelp.py`. |
+| **21/09/2026** | Ejecución de notebooks con comandos `display()` y `df.count()` repetitivos en Silver. | **Elevado:** Tiempos de espera de clúster prolongados y alto consumo de DBUs en acciones de acción eager. | Se eliminaron todos los `display()` exploratorios del flujo productivo; las validaciones se consolidaron en un único loop de aserciones pushdown. |
+| **28/09/2026** | Consulta masiva de tablas Gold con escaneos completos (*Full Table Scans*). | **Moderado:** Lecturas redundantes de particiones completas de Delta Lake. | Se aplicó optimización Delta (`OPTIMIZE yelp_silver.slv_review ZORDER BY (business_id, date)`) reduciendo la lectura de archivos Parquet en un 70%. |
+| **04/10/2026** | Corrida del pipeline multi-tarea completo integrado mediante Databricks Workflows. | **Óptimo:** Consumo inferior al 22% de la cuota diaria; tiempo total de corrida de 6.4 minutos. | Configuración de clúster serverless de apagado automático a los 10 minutos de inactividad y políticas de reintentos exponenciales. |
+
+---
+
+## 9. Trazabilidad Documento ↔ Plataforma
+
+| Sección de este documento | Notebook que la implementa | Objetos verificables en el catálogo | Discrepancias y cómo se resolvieron |
+| :--- | :--- | :--- | :--- |
+| **3. Arquitectura de Referencia** | `E7_pipeline_lakehouse/01` a `04` | Tablas Delta en `workspace.yelp_bronze`, `yelp_silver`, `yelp_gold` | El diseño preveía una arquitectura Lambda; se simplificó a Lakehouse Medallion unificado por eficiencia FinOps. |
+| **4. Modelos Conceptual y Lógico** | `E3_modelo_fisico/01_modelo_fisico_ddl` | Tablas `slv_business`, `slv_review`, `slv_user`, `slv_checkin` con `COMMENT` en 100% de columnas | El modelo lógico contemplaba tabla puente relacional para categorías; se implementó como `ARRAY<STRING>` según ADR-03. |
+| **5. Estrategia de Gobierno y RACI** | `E6_controles_gobierno/01_controles_unity` | Tags en Unity Catalog (`confidencialidad = 'PII'`) y permisos RBAC (`GRANT SELECT`) | Se restringió el acceso a `slv_user.name` mediante vistas dinámicas seguras y column masks para analistas de Producto. |
+| **6. Reglas de Calidad (DQ)** | `E5_calidad_datos/01_reglas_calidad` | Catálogo `yelp_gov.dq_reglas` y bitácora histórica `yelp_gov.dq_resultados` | Las 12 reglas coinciden idénticamente entre el código `regla_id` y este documento (`DQ-001` a `DQ-012`). |
+| **Anexos A y B (Glosario y Diccionario)** | `E4_diccionario_glosario/01` y `02` | Tablas `yelp_gov.glosario_negocio` y `yelp_gov.diccionario_datos` | Los Excel institucionales se cargaron sin discrepancias desde el volumen `/Volumes/workspace/yelp_gov/artefactos/`. |
+| **7. Requerimientos e KPIs** | `E8_dashboard_bi/01_consultas_base` | Tablas `gld_kpi_negocio_mensual`, `gld_cohortes_retencion_mensual` y vistas | Las fórmulas de rating bayesiano y retención se validaron contra las definiciones del Glosario de Negocio. |
+
+---
+
+## Anexos
+
+### Anexo A · Glosario de Términos de Negocio
+* **Archivo Fuente:** `Glosario_de_terminos_de_negocio_YelpConnect_PLANTILLA.xlsx`
+* **Tabla Gobernada:** `workspace.yelp_gov.glosario_negocio`
+* **Resumen de Cobertura:** Contiene 23 términos aprobados cubriendo 5 dominios (*Negocio*, *Usuario*, *Contenido*, *Interacción* y *Gobierno*). Resuelve las disputas de significado del caso:
+  1. **Reseña Verificada:** Reseña publicada por un usuario con antigüedad > 30 días, calificación 1-5, texto con longitud > 15 caracteres y que aprueba el 100% de reglas DQ.
+  2. **Reseña Duplicada:** Toda reseña secundaria emitida por el mismo usuario sobre el mismo comercio en un intervalo menor a 24 horas.
+  3. **Check-in Válido:** Marca de presencia física confirmada deduplicada por ventana de 60 minutos por usuario y negocio.
+  4. **Rating Ponderado Bayesiano:** Calificación amortiguada mediante la media global de la ciudad para evitar el sesgo de negocios con muestras mínimas de reseñas.
+  5. **Cohorte de Usuario:** Agrupación analítica de usuarios según su mes y año de registro (`yelping_since`) para medir su retención y ciclo de vida en la app.
+
+### Anexo B · Diccionario de Datos
+* **Archivo Fuente:** `Diccionario_de_Datos_YelpConnect_PLANTILLA.xlsx`
+* **Tabla Gobernada:** `workspace.yelp_gov.diccionario_datos`
+* **Resumen de Cobertura:** Documenta 30 elementos de datos técnicos correspondientes al 100% de los atributos de las capas Silver y Gold. Cada columna cuenta con descripción técnica, tipo de dato, regla DQ asociada, Data Owner formal y etiqueta de clasificación de sensibilidad.
+
+### Anexo C · Diagramas en Formato Editable
+* `arquitectura_referencia_yelpconnect_v2.drawio` (Vista integral de capas Lakehouse y gobierno vertical, Sección 3.3).
+* `modelo_conceptual_entidades_v1.drawio` (Diagrama entidad-relación conceptual de YelpConnect, Sección 4.1).
+* `modelo_logico_lakehouse_v3.drawio` (Diagrama relacional 3FN y dimensional estrella, Secciones 4.2 y 4.3).
+
+### Anexo D · Actas de Decisión del Equipo
+* **Acta 01 (19/08/2026): Homologación del Conteo de Check-ins.** 
+  * *Disputa:* Operaciones Comerciales proponía contar cada marca temporal cruda; Producto proponía máximo un check-in por día.
+  * *Resolución:* Se adoptó la deduplicación por ventana de 60 minutos por usuario y negocio (ADR-01). Preserva la señal de visitas recurrentes legítimas sin duplicar conteos. Decisión aprobada por Carla Romero y Andrew Collins.
+* **Acta 02 (02/09/2026): Aislamiento Preventivo de Reseñas Sospechosas.** 
+  * *Disputa:* Growth solicitaba mantener todas las reseñas en los paneles para maximizar el volumen visible; Trust & Safety requería eliminar inmediatamente cualquier reseña flagged.
+  * *Resolución:* Las reseñas con advertencias de calidad o sospecha de bot se retienen en tablas de cuarentena en Silver para auditoría, computando en métricas de salud internas pero excluyéndose del rating público visible de Producto.
+* **Acta 03 (16/09/2026): Tratamiento de Categorías como Array en Silver.** 
+  * *Disputa:* El equipo de modelado evaluó normalizar a una tabla puente relacional clásica frente a la recomendación del arquitecto de mantener arreglos en Delta.
+  * *Resolución:* Se aprobó el almacenamiento como `ARRAY<STRING>` (ADR-03) al verificarse que ningún requerimiento analítico requería mantener una tabla puente pesada, reduciendo los tiempos de pipeline en un 40%.
+* **Acta 04 (30/09/2026): Selección de Esquema Dimensional en Gold para Retención de Producto.**
+  * *Disputa:* El equipo de analítica propuso un tablón único desnormalizado (OBT) que simplificara consultas en Power BI pero que triplicaba el tamaño en disco y complicaba el análisis histórico de cohortes.
+  * *Resolución:* Se aprobó el modelo Kimball en estrella con dimensiones conformes y tabla de hechos agregados de cohortes (ADR-05), garantizando eficiencia de almacenamiento y flexibilidad analítica para Andrew Collins.
+* **Acta 05 (09/10/2026): Tratamiento del Objeto Anidado `business.attributes` y `hours` (Schema-on-Read en Bronze).**
+  * *Disputa:* Data Science (Mei Lin) consultó si los 39 subcampos anidados de `business.attributes` debían normalizarse en una tabla clave-valor en Silver (`slv_business_atributo`) o aplanarse en `slv_business`.
+  * *Resolución:* Se aprobó mantener `attributes` y `hours` exclusivamente en `workspace.yelp_bronze.brz_business` bajo modalidad *Schema-on-Read* (**ADR-07**), ya que presentan >65% de dispersión en 28 de sus 39 claves, contienen diccionarios Python de segundo nivel no requeridos por los KPIs de Producto (`REQ-01` a `REQ-06`) y su explosión a Silver incrementaría innecesariamente el consumo de DBUs en Databricks Free Edition.
