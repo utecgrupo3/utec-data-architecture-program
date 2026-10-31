@@ -353,13 +353,15 @@ except Exception:
 # Ejecuta el motor de E5 (01_reglas_calidad) y corta el pipeline si una regla de criticidad alta falla.
 resultado = dbutils.notebook.run("../E5_calidad_datos/01_reglas_calidad", 600)
 
-fallas_criticas = spark.sql("""
-  SELECT count(*) c
-  FROM workspace.yelp_gov.dq_resultados res
-  JOIN workspace.yelp_gov.dq_reglas r USING (regla_id)
-  WHERE r.criticidad = 'alta' AND NOT res.paso
-    AND res.ejecucion_ts = (SELECT max(ejecucion_ts) FROM workspace.yelp_gov.dq_resultados)
-""").first().c
+df_res = spark.table("workspace.yelp_gov.dq_resultados")
+df_reg = spark.table("workspace.yelp_gov.dq_reglas")
+max_ts = df_res.agg(F.max("ejecucion_ts").alias("max_ts")).first()["max_ts"]
+
+fallas_criticas = (
+    df_res.filter((F.col("ejecucion_ts") == F.lit(max_ts)) & (~F.col("paso")))
+    .join(df_reg.filter(F.col("criticidad") == "alta"), on="regla_id", how="inner")
+    .count()
+)
 assert fallas_criticas == 0, f"❌ {fallas_criticas} reglas críticas fallaron — pipeline detenido (así se ve la calidad como GATE, no como reporte)"
 print(f"✔ Gate de calidad superado ({resultado}): 0 fallas críticas en Silver")
 
