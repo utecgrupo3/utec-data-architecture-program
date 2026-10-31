@@ -111,18 +111,54 @@ Un entregable de plataforma está terminado cuando:
 4. El markdown del notebook documenta decisiones y supuestos propios de la implementación.
 5. Está en `main` vía Pull Request revisado por al menos otro integrante.
 
-## 6. Orden de ejecución recomendado
+## 6. Orden de ejecución paso a paso (Secuencia obligatoria)
 
-```
-00_setup/00_configurar_lakehouse      →  00_setup/01_verificar_datos_raw
-      ↓
-E7/01_bronze_ingesta                  →  E3/01_modelo_fisico_ddl
-      ↓
-E7/02_silver_limpieza                 →  E4/01_glosario · E4/02_diccionario
-      ↓
-E5/01_reglas_calidad                  →  E6/01_controles_unity_catalog
-      ↓
-E7/03_gold_productos_datos            →  E8/01_consultas_base_dashboard
-      ↓
-E7/04_job_orquestacion                →  EX/01_analisis_ia_resenas (bonus)
+Para que un entorno limpio se despliegue de principio a fin sin errores de dependencias, los scripts y notebooks deben ejecutarse estrictamente en el siguiente **orden secuencial (1 → 14)**:
+
+| Paso | Fase | Archivo / Notebook | Dónde se ejecuta | Qué hace / Dependencia que resuelve |
+| :---: | :--- | :--- | :---: | :--- |
+| **1** | **0. Setup e Insumos** | `00_setup/00_configurar_lakehouse.py` | Databricks | Crea los schemas (`yelp_bronze`, `yelp_silver`, `yelp_gold`, `yelp_gov`), el Volume `/Volumes/workspace/yelp_bronze/raw/` y las tablas base de gobierno. |
+| **2** | **0. Setup e Insumos** | `datos/preparar_muestra_yelp.py` | **Tu Laptop (Local)** | Filtra el Yelp Open Dataset para `Philadelphia`, genera los 5 archivos `.json.gz` en `datos/muestra/` y se suben a `/Volumes/workspace/yelp_bronze/raw/`. |
+| **3** | **0. Setup e Insumos** | `00_setup/01_verificar_datos_raw.py` | Databricks | Verifica que los 5 archivos `.json.gz` estén en el Volume y perfila sus esquemas antes de ingestar. |
+| **4** | **1. Bronze y DDL** | `E7_pipeline_lakehouse/01_bronze_ingesta.py` | Databricks | Ingesta batch (`brz_business`, `brz_user`, `brz_tip`, `brz_checkin`) e incremental con Auto Loader (`brz_review`) hacia `workspace.yelp_bronze`. |
+| **5** | **1. Bronze y DDL** | `E3_modelo_fisico/01_modelo_fisico_ddl.py` | Databricks | Crea el DDL físico de las 7 tablas Silver (`yelp_silver`) y las 8 tablas Gold (`yelp_gold`) con comentarios, PK/FK, constraints `CHECK` y Change Data Feed. |
+| **6** | **2. Silver, DQ y Metadata** | `E7_pipeline_lakehouse/02_silver_limpieza.py` | Databricks | Transforma y limpia desde Bronze, separa anomalías en `slv_review_cuarentena` y puebla las 7 tablas de `workspace.yelp_silver`. |
+| **7** | **2. Silver, DQ y Metadata** | `E5_calidad_datos/01_reglas_calidad.py` | Databricks | Registra las 15 reglas (`DQ-001` a `DQ-015`) en `yelp_gov.dq_reglas` y evalúa su cumplimiento sobre las tablas Silver en `yelp_gov.dq_resultados`. |
+| **8** | **2. Silver, DQ y Metadata** | `E4_diccionario_glosario/01_glosario_negocio.py` | Databricks | Sincroniza la plantilla Excel de Glosario al Volume `/Volumes/workspace/yelp_gov/artefactos/` y puebla `yelp_gov.glosario_negocio`. |
+| **9** | **2. Silver, DQ y Metadata** | `E4_diccionario_glosario/02_diccionario_datos.py` | Databricks | Sincroniza la plantilla Excel de Diccionario, cruza contra `information_schema` (E3) y `dq_reglas` (E5), puebla `yelp_gov.diccionario_datos` y aplica tags. |
+| **10** | **3. Gold y Gobierno UC** | `E7_pipeline_lakehouse/03_gold_productos_datos.py` | Databricks | Construye y puebla el esquema estrella Kimball (`gld_dim_*`, `gld_fact_resenas`) y las tablas agregadas de KPIs en `workspace.yelp_gold`. |
+| **11** | **3. Gold y Gobierno UC** | `E6_controles_gobierno/01_controles_unity_catalog.py` | Databricks | Registra `yelp_gov.matriz_raci`, aplica `SET TAGS`, permisos `GRANT`/`REVOKE`, máscara PII (`mascara_nombre` en `slv_user.name`) y vista `vw_usuarios_seguro`. |
+| **12** | **4. BI, DataOps e IA** | `E8_dashboard_bi/01_consultas_base_dashboard.py` | Databricks | Ejecuta y valida las consultas analíticas y de gobierno sobre `yelp_gold` y `yelp_gov` que alimentan el Dashboard BI y Genie. |
+| **13** | **4. BI, DataOps e IA** | `E7_pipeline_lakehouse/04_job_orquestacion.py` | Databricks | Crea/actualiza el Lakeflow Job diario encadenado y genera el monitoreo de observabilidad y FinOps desde `yelp_gov.pipeline_bitacora`. |
+| **14** | **4. BI, DataOps e IA** | `EX_bonus_ia/01_analisis_ia_resenas.py` | Databricks *(Bonus)* | Ejecuta el enriquecimiento analítico de sentimiento y tópicos con IA sobre las reseñas certificadas. |
+
+### Resumen visual del flujo lineal
+```text
+[Paso 1]  00_setup/00_configurar_lakehouse.py          (Crea schemas, volumes y tablas de control)
+   ↓
+[Paso 2]  datos/preparar_muestra_yelp.py               (Local: genera *.json.gz y sube a /Volumes/.../raw/)
+   ↓
+[Paso 3]  00_setup/01_verificar_datos_raw.py           (Valida los 5 archivos .json.gz en el Volume)
+   ↓
+[Paso 4]  E7_pipeline_lakehouse/01_bronze_ingesta.py   (Carga brz_business, brz_user, brz_tip, brz_checkin, brz_review)
+   ↓
+[Paso 5]  E3_modelo_fisico/01_modelo_fisico_ddl.py     (Crea DDL de tablas Silver 3FN y Gold Kimball con comments/PK/FK)
+   ↓
+[Paso 6]  E7_pipeline_lakehouse/02_silver_limpieza.py  (Limpia, deduplica y puebla las 7 tablas slv_* + cuarentena)
+   ↓
+[Paso 7]  E5_calidad_datos/01_reglas_calidad.py        (Registra DQ-001..DQ-015 en dq_reglas y evalúa dq_resultados)
+   ↓
+[Paso 8]  E4_diccionario_glosario/01_glosario_negocio.py   (Carga Excel de Glosario → yelp_gov.glosario_negocio)
+   ↓
+[Paso 9]  E4_diccionario_glosario/02_diccionario_datos.py  (Carga Excel de Diccionario + valida contra DDL E3 y reglas E5)
+   ↓
+[Paso 10] E7_pipeline_lakehouse/03_gold_productos_datos.py (Puebla dimensiones, hechos y KPIs en workspace.yelp_gold)
+   ↓
+[Paso 11] E6_controles_gobierno/01_controles_unity_catalog.py (Matriz RACI, Tags UC, RBAC, Column Mask PII y vista segura)
+   ↓
+[Paso 12] E8_dashboard_bi/01_consultas_base_dashboard.py   (Consultas base de KPIs para Dashboard Lakeview y Genie)
+   ↓
+[Paso 13] E7_pipeline_lakehouse/04_job_orquestacion.py     (Despliega Lakeflow Job automatizado y reporte FinOps)
+   ↓
+[Paso 14] EX_bonus_ia/01_analisis_ia_resenas.py            (Bonus: Análisis de sentimiento y extracción con IA)
 ```
