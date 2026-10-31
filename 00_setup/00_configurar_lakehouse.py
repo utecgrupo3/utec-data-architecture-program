@@ -10,7 +10,7 @@
 # MAGIC
 # MAGIC > ✏️ **TODO (grupo):** completar el widget con el número de grupo antes de ejecutar.
 
-# COMMAND ----------
+# COMMAND ----------- :)
 
 dbutils.widgets.text("grupo", "00", "Número de grupo")
 GRUPO = dbutils.widgets.get("grupo")
