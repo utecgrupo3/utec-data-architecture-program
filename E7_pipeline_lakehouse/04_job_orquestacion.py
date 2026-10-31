@@ -27,7 +27,7 @@
 
 # COMMAND ----------
 
-# DBTITLE 1: 1.1 Creación / Actualización Programática del Lakeflow Job vía Databricks SDK
+# DBTITLE 1,1.1 Creación / Actualización Programática del Lakeflow Job vía Databricks SDK
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service import jobs
 
@@ -118,7 +118,7 @@ else:
 
 # COMMAND ----------
 
-# DBTITLE 1: 2. Monitoreo — Bitácora de corridas del pipeline (poblada por los notebooks 01-03)
+# DBTITLE 1,2. Monitoreo — Bitácora de corridas del pipeline (poblada por los notebooks 01-03)
 # MAGIC %sql
 # MAGIC CREATE TABLE IF NOT EXISTS workspace.yelp_gov.pipeline_bitacora (
 # MAGIC   ejecucion_ts     TIMESTAMP COMMENT 'Fecha y hora exacta del registro de métrica',
@@ -140,7 +140,7 @@ else:
 
 # COMMAND ----------
 
-# DBTITLE 1: 2.1 Resumen ejecutivo de tiempos y volumetría por capa
+# DBTITLE 1,2.1 Resumen ejecutivo de tiempos y volumetría por capa
 # MAGIC %sql
 # MAGIC SELECT
 # MAGIC   capa,
@@ -155,7 +155,7 @@ else:
 
 # COMMAND ----------
 
-# DBTITLE 1: 3. FinOps en Databricks Free Edition y Estimación de Costo Enterprise
+# DBTITLE 1,3. FinOps en Databricks Free Edition y Estimación de Costo Enterprise
 # MAGIC %md
 # MAGIC ## 3. Gobernanza Financiera y Decisiones de Eficiencia (FinOps — Sección 8.2 del Documento Formal)
 # MAGIC

@@ -13,7 +13,7 @@
 
 # COMMAND ----------
 
-# DBTITLE 1: Inicialización de esquemas y helper de bitácora FinOps
+# DBTITLE 1,Inicialización de esquemas y helper de bitácora FinOps
 import time
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
@@ -40,7 +40,7 @@ def registrar_bitacora(capa: str, tabla: str, filas: int, t0: float):
 
 # COMMAND ----------
 
-# DBTITLE 1: 1. Entidad Silver — slv_business (Normalización + Categorías ARRAY<STRING> ADR-03)
+# DBTITLE 1,1. Entidad Silver — slv_business (Normalización + Categorías ARRAY<STRING> ADR-03)
 t0 = time.time()
 brz_bus = spark.table("workspace.yelp_bronze.brz_business")
 
@@ -81,7 +81,7 @@ registrar_bitacora("silver", "workspace.yelp_silver.slv_business",
 
 # COMMAND ----------
 
-# DBTITLE 1: 2. Entidades Silver — slv_user (Perfiles) y slv_amistad (Grafo Social v1.2)
+# DBTITLE 1,2. Entidades Silver — slv_user (Perfiles) y slv_amistad (Grafo Social v1.2)
 t0 = time.time()
 brz_usr = spark.table("workspace.yelp_bronze.brz_user")
 
@@ -147,7 +147,7 @@ registrar_bitacora("silver", "workspace.yelp_silver.slv_amistad",
 
 # COMMAND ----------
 
-# DBTITLE 1: 3. Entidades Silver — slv_review y slv_review_cuarentena (Deduplicación + Cuarentena Acta 02)
+# DBTITLE 1,3. Entidades Silver — slv_review y slv_review_cuarentena (Deduplicación + Cuarentena Acta 02)
 # Criterio documentado de deduplicación y cuarentena:
 #  1. Duplicado físico: mismo review_id (se conserva el más reciente por _fecha_ingesta).
 #  2. Duplicado lógico: mismo (user_id, business_id, md5(lower(trim(text)))) o mismo día.
@@ -237,7 +237,7 @@ registrar_bitacora("silver", "workspace.yelp_silver.slv_review",
 
 # COMMAND ----------
 
-# DBTITLE 1: 4. Entidades Silver — slv_tip y slv_checkin (Explosión a grano evento y deduplicación horaria ADR-01)
+# DBTITLE 1,4. Entidades Silver — slv_tip y slv_checkin (Explosión a grano evento y deduplicación horaria ADR-01)
 # --- 4.1 slv_tip ---
 t0_tip = time.time()
 brz_tip = spark.table("workspace.yelp_bronze.brz_tip")
@@ -308,7 +308,7 @@ registrar_bitacora("silver", "workspace.yelp_silver.slv_checkin",
 
 # COMMAND ----------
 
-# DBTITLE 1: 5. Reconciliación de Consistencia E5 (DQ-011 y DQ-012) y Preservación de Controles E6 (ADR-06)
+# DBTITLE 1,5. Reconciliación de Consistencia E5 (DQ-011 y DQ-012) y Preservación de Controles E6 (ADR-06)
 # 5.1 DQ-011 (Sección 6.2): Ajustar yelping_since a la marca temporal de la primera reseña histórica cuando exista desfase horario
 spark.sql("""
 MERGE INTO workspace.yelp_silver.slv_user AS u
@@ -349,7 +349,7 @@ except Exception:
 
 # COMMAND ----------
 
-# DBTITLE 1: 6. Gate de calidad (E5) — el pipeline falla si la calidad crítica no pasa
+# DBTITLE 1,6. Gate de calidad (E5) — el pipeline falla si la calidad crítica no pasa
 # Ejecuta el motor de E5 (01_reglas_calidad) y corta el pipeline si una regla de criticidad alta falla.
 resultado = dbutils.notebook.run("../E5_calidad_datos/01_reglas_calidad", 600)
 

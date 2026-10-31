@@ -16,7 +16,7 @@
 
 # COMMAND ----------
 
-# DBTITLE 1: Configuración de rutas y función de observabilidad (bitácora FinOps E7.4)
+# DBTITLE 1,Configuración de rutas y función de observabilidad (bitácora FinOps E7.4)
 import time
 from pyspark.sql import functions as F
 
@@ -45,7 +45,7 @@ def registrar_bitacora(capa: str, tabla: str, filas: int, t0: float):
 
 # COMMAND ----------
 
-# DBTITLE 1: Modo batch — 4 entidades (business, user, tip, checkin)
+# DBTITLE 1,Modo batch — 4 entidades (business, user, tip, checkin)
 for e in ENTIDADES:
     t0 = time.time()
     tabla_destino = f"workspace.yelp_bronze.brz_{e}"
@@ -60,7 +60,7 @@ for e in ENTIDADES:
 
 # COMMAND ----------
 
-# DBTITLE 1: Modo incremental — Auto Loader (cloudFiles) para review (la entidad de mayor volumen)
+# DBTITLE 1,Modo incremental — Auto Loader (cloudFiles) para review (la entidad de mayor volumen)
 t0 = time.time()
 CHECKPOINT = "/Volumes/workspace/yelp_bronze/raw/_checkpoints/review"
 TABLA_REVIEW = "workspace.yelp_bronze.brz_review"
@@ -89,7 +89,7 @@ registrar_bitacora("bronze", TABLA_REVIEW, n_rev, t0)
 
 # COMMAND ----------
 
-# DBTITLE 1: Documentación de Metadatos en Unity Catalog para la Capa Bronze (Tablas y Columnas)
+# DBTITLE 1,Documentación de Metadatos en Unity Catalog para la Capa Bronze (Tablas y Columnas)
 COMENTARIOS_TABLAS_BRONZE = {
     "brz_business": "Capa Bronze (fidelidad al origen): catálogo crudo de negocios locales de YelpConnect, incluyendo estructuras anidadas attributes y hours retenidas bajo Schema-on-Read (ADR-07).",
     "brz_user": "Capa Bronze (fidelidad al origen): perfiles crudos de usuarios registrados en YelpConnect, incluyendo lista de amigos concatenada y contadores de cumplidos.",

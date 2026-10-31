@@ -15,7 +15,7 @@
 
 # COMMAND ----------
 
-# DBTITLE 1: 0. Registro de la Matriz RACI en Unity Catalog (workspace.yelp_gov.matriz_raci)
+# DBTITLE 1,0. Registro de la Matriz RACI en Unity Catalog (workspace.yelp_gov.matriz_raci)
 from pyspark.sql import Row
 
 spark.sql("CREATE SCHEMA IF NOT EXISTS workspace.yelp_gov")
@@ -103,7 +103,7 @@ display(spark.table("workspace.yelp_gov.matriz_raci"))
 
 # COMMAND ----------
 
-# DBTITLE 1: Control 1 — Clasificación con Tags en Esquemas, Tablas y Columnas Sensibles
+# DBTITLE 1,Control 1 — Clasificación con Tags en Esquemas, Tablas y Columnas Sensibles
 # Aplicamos etiquetas nativas de Unity Catalog alineadas con la Sección 5.3 (Política de Clasificación de Datos)
 comandos_tags = [
     # 1.1 Tags a nivel de Schema (Arquitectura Medallón + Gobierno)
@@ -146,7 +146,7 @@ print(f"✔ Control 1 completado: {aplicados}/{len(comandos_tags)} sentencias SE
 
 # COMMAND ----------
 
-# DBTITLE 1: 1.1 Verificación de Tags registrados en Information Schema de Unity Catalog
+# DBTITLE 1,1.1 Verificación de Tags registrados en Information Schema de Unity Catalog
 # MAGIC %sql
 # MAGIC SELECT 'SCHEMA' AS nivel, schema_name AS objeto, '' AS columna, tag_name, tag_value
 # MAGIC FROM workspace.information_schema.schema_tags
@@ -163,7 +163,7 @@ print(f"✔ Control 1 completado: {aplicados}/{len(comandos_tags)} sentencias SE
 
 # COMMAND ----------
 
-# DBTITLE 1: Control 2 — Permisos RBAC por Capa (Principio de Mínimo Privilegio)
+# DBTITLE 1,Control 2 — Permisos RBAC por Capa (Principio de Mínimo Privilegio)
 # Modelo RBAC aprobado en la Sección 5.1 y 5.3 del Documento Formal:
 # - workspace.yelp_bronze: Acceso exclusivo para Data Platform / Data Custodian (prohibido para negocio/BI).
 # - workspace.yelp_silver: Lectura para Data Stewards y Trust & Safety (con column mask activa en PII).
@@ -194,7 +194,7 @@ for cmd in comandos_rbac:
 
 # COMMAND ----------
 
-# DBTITLE 1: 2.1 Verificación de Grants activos en Capa Gold y Gobierno
+# DBTITLE 1,2.1 Verificación de Grants activos en Capa Gold y Gobierno
 # MAGIC %sql
 # MAGIC SHOW GRANTS ON SCHEMA workspace.yelp_gold;
 
@@ -205,7 +205,7 @@ for cmd in comandos_rbac:
 
 # COMMAND ----------
 
-# DBTITLE 1: Control 3 — Enmascaramiento Dinámico de PII (Función + Column Mask + Vista Segura)
+# DBTITLE 1,Control 3 — Enmascaramiento Dinámico de PII (Función + Column Mask + Vista Segura)
 # MAGIC %sql
 # MAGIC -- 3.1 Crear función de enmascaramiento gobernada en workspace.yelp_gov (ADR-06)
 # MAGIC -- Solo miembros de 'data_stewards' o 'trust_and_safety' ven el nombre en claro;
@@ -221,7 +221,7 @@ for cmd in comandos_rbac:
 
 # COMMAND ----------
 
-# DBTITLE 1: 3.2 Aplicar Column Mask nativa sobre slv_user.name y crear Vista Segura en Gold
+# DBTITLE 1,3.2 Aplicar Column Mask nativa sobre slv_user.name y crear Vista Segura en Gold
 # Aplicamos tanto Opción A (Column Mask nativa sobre la columna física `name` en `slv_user`)
 # como Opción B (Vista Segura `vw_usuarios_seguro` en `yelp_gold`) para defensa en profundidad.
 try:
@@ -255,7 +255,7 @@ print("✔ Opción B aplicada: Vista segura workspace.yelp_gold.vw_usuarios_segu
 
 # COMMAND ----------
 
-# DBTITLE 1: 3.3 Demostración del Enmascaramiento PII (Comparativa de Roles: Trust & Safety vs Analista de Producto)
+# DBTITLE 1,3.3 Demostración del Enmascaramiento PII (Comparativa de Roles: Trust & Safety vs Analista de Producto)
 # MAGIC %sql
 # MAGIC -- Evidencia de ejecución: el mismo SELECT sobre slv_user y vw_usuarios_seguro devuelve el nombre enmascarado
 # MAGIC -- para cualquier usuario que no pertenezca al grupo 'data_stewards' o 'trust_and_safety'.
@@ -273,7 +273,7 @@ print("✔ Opción B aplicada: Vista segura workspace.yelp_gold.vw_usuarios_segu
 
 # COMMAND ----------
 
-# DBTITLE 1: Control 4 — Evidencia de Linaje End-to-End y Auditoría Forense de la Entidad `review`
+# DBTITLE 1,Control 4 — Evidencia de Linaje End-to-End y Auditoría Forense de la Entidad `review`
 # MAGIC %sql
 # MAGIC -- Reconciliación matemática End-to-End del linaje de la entidad `review`
 # MAGIC -- Responde al dolor de Rafael Nakamura (Trust & Safety): "reglas de fraude sin linaje claro".
@@ -302,7 +302,7 @@ print("✔ Opción B aplicada: Vista segura workspace.yelp_gold.vw_usuarios_segu
 
 # COMMAND ----------
 
-# DBTITLE 1: 4.1 Grafo de Linaje de `review` registrado en el Catálogo y Diccionario de Gobierno
+# DBTITLE 1,4.1 Grafo de Linaje de `review` registrado en el Catálogo y Diccionario de Gobierno
 # MAGIC %md
 # MAGIC ## 4.2 Diagrama de Linaje End-to-End de la Entidad `review` (Catalog Explorer)
 # MAGIC
@@ -341,5 +341,5 @@ print("✔ Opción B aplicada: Vista segura workspace.yelp_gold.vw_usuarios_segu
 
 # COMMAND ----------
 
-# DBTITLE 1: Retorno de estado para orquestación opcional desde E7 (04_job_orquestacion.py)
+# DBTITLE 1,Retorno de estado para orquestación opcional desde E7 (04_job_orquestacion.py)
 dbutils.notebook.exit("OK")

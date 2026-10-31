@@ -16,7 +16,7 @@
 
 # COMMAND ----------
 
-# DBTITLE 1: Q1 — Evolución mensual de reseñas, rating simple y Rating Bayesiano BWR (REQ-01 · Producto: Andrew Collins)
+# DBTITLE 1,Q1 — Evolución mensual de reseñas, rating simple y Rating Bayesiano BWR (REQ-01 · Producto: Andrew Collins)
 # MAGIC %sql
 # MAGIC -- Responde a REQ-01 (Andrew Collins, VP of Product):
 # MAGIC -- ¿Cómo evoluciona mensualmente el volumen de reseñas verificadas, el rating aritmético y el Rating Ponderado Bayesiano (ADR-02)?
@@ -48,7 +48,7 @@
 
 # COMMAND ----------
 
-# DBTITLE 1: Q2 — Scorecard de Salud de Calidad de Datos por Dimensión DAMA-DMBOK (Gobierno · CDO: Laura Hernández)
+# DBTITLE 1,Q2 — Scorecard de Salud de Calidad de Datos por Dimensión DAMA-DMBOK (Gobierno · CDO: Laura Hernández)
 # MAGIC %sql
 # MAGIC -- Responde a la CDO (Laura Hernández):
 # MAGIC -- Estado actual del cumplimiento de las 15 reglas de calidad (DQ-001 a DQ-015) agrupadas en las 6 dimensiones DAMA-DMBOK.
@@ -67,7 +67,7 @@
 
 # COMMAND ----------
 
-# DBTITLE 1: Q3 — Indicadores Ejecutivos de Gobierno de Datos: E4 + E5 + E6 (Gobierno · CDO: Laura Hernández)
+# DBTITLE 1,Q3 — Indicadores Ejecutivos de Gobierno de Datos: E4 + E5 + E6 (Gobierno · CDO: Laura Hernández)
 # MAGIC %sql
 # MAGIC -- Responde a la CDO (Laura Hernández):
 # MAGIC -- Cobertura de documentación en Diccionario de Datos (E4), Glosario de Negocio (E4), Matriz RACI (E6) y Reglas DQ (E5).
@@ -84,7 +84,7 @@
 
 # COMMAND ----------
 
-# DBTITLE 1: Q4 — Top Negocios por Rating Ponderado Bayesiano BWR y Utilidad Comunitaria CUR (REQ-01 / REQ-02 · Producto: Andrew Collins)
+# DBTITLE 1,Q4 — Top Negocios por Rating Ponderado Bayesiano BWR y Utilidad Comunitaria CUR (REQ-01 / REQ-02 · Producto: Andrew Collins)
 # MAGIC %sql
 # MAGIC -- Responde a REQ-01 y REQ-02 (Andrew Collins, VP of Product):
 # MAGIC -- Ranking de establecimientos para la insignia "Comercio Recomendado" evitando el sesgo de muestras pequeñas mediante BWR (ADR-02).
@@ -111,7 +111,7 @@
 
 # COMMAND ----------
 
-# DBTITLE 1: Q5 — Evolución y Top de Afluencia Física Homologada: Check-ins Diarios HAI (REQ-02 / REQ-05 · Ops Comerciales: Carla Romero)
+# DBTITLE 1,Q5 — Evolución y Top de Afluencia Física Homologada: Check-ins Diarios HAI (REQ-02 / REQ-05 · Ops Comerciales: Carla Romero)
 # MAGIC %sql
 # MAGIC -- Responde a REQ-02 y REQ-05 (Carla Romero, Head of Commercial Ops & Ads / Andrew Collins, VP of Product):
 # MAGIC -- Conteo oficial homologado de visitas físicas deduplicadas por ventana horaria de 60 minutos (ADR-01 / Acta 01).
@@ -130,7 +130,7 @@
 
 # COMMAND ----------
 
-# DBTITLE 1: Q6 — Monitoreo de Salud de Reseñas y Tasa de Cuarentena RHR (REQ-03 · Trust & Safety: Rafael Nakamura)
+# DBTITLE 1,Q6 — Monitoreo de Salud de Reseñas y Tasa de Cuarentena RHR (REQ-03 · Trust & Safety: Rafael Nakamura)
 # MAGIC %sql
 # MAGIC -- Responde a REQ-03 (Rafael Nakamura, Lead Trust & Safety / Andrew Collins, VP of Product):
 # MAGIC -- ¿Qué porcentaje de reseñas son aisladas en cuarentena por sospecha de duplicidad o incumplimiento DQ (Acta 02)?
@@ -153,7 +153,7 @@
 
 # COMMAND ----------
 
-# DBTITLE 1: Q7 — Análisis de Retención Mensual de Cohortes de Usuarios CRR % (REQ-04 · Producto: Andrew Collins)
+# DBTITLE 1,Q7 — Análisis de Retención Mensual de Cohortes de Usuarios CRR % (REQ-04 · Producto: Andrew Collins)
 # MAGIC %sql
 # MAGIC -- Responde a REQ-04 (Andrew Collins, VP of Product):
 # MAGIC -- ¿Cuál es la tasa de retención de cohortes de usuarios según su mes/año de registro (yelping_since) a lo largo de su ciclo de vida?
@@ -171,7 +171,7 @@
 
 # COMMAND ----------
 
-# DBTITLE 1: Q8 — Observabilidad Operativa y Tendencia de la Bitácora del Pipeline Medallón (Gobierno & FinOps · CDO / Data Platform)
+# DBTITLE 1,Q8 — Observabilidad Operativa y Tendencia de la Bitácora del Pipeline Medallón (Gobierno & FinOps · CDO / Data Platform)
 # MAGIC %sql
 # MAGIC -- Responde a la CDO (Laura Hernández) y al equipo de Data Platform (Sección 8 del Documento Formal):
 # MAGIC -- Volumetría procesada, tiempos de ejecución por capa Medallón y salud operativa del Lakeflow Job E7.4.

@@ -13,7 +13,7 @@
 
 # COMMAND ----------
 
-# DBTITLE 1: 1. Enriquecimiento de reseñas con Databricks AI Functions (ai_analyze_sentiment + ai_classify)
+# DBTITLE 1,1. Enriquecimiento de reseñas con Databricks AI Functions (ai_analyze_sentiment + ai_classify)
 # MAGIC %sql
 # MAGIC CREATE OR REPLACE TABLE workspace.yelp_gold.gld_resenas_enriquecidas
 # MAGIC COMMENT 'EX · Muestra gobernada de reseñas enriquecidas con IA (sentimiento, tópico principal y flag de disonancia). Consumidores: Trust & Safety (Rafael Nakamura) y Producto (Andrew Collins - REQ-06).'
@@ -61,7 +61,7 @@
 
 # COMMAND ----------
 
-# DBTITLE 1: 1.1 Documentación de metadatos y etiquetas de gobierno en Unity Catalog para la tabla de IA
+# DBTITLE 1,1.1 Documentación de metadatos y etiquetas de gobierno en Unity Catalog para la tabla de IA
 comandos_metadata_ia = [
     "ALTER TABLE workspace.yelp_gold.gld_resenas_enriquecidas SET TAGS ('capa' = 'gold', 'origen' = 'ai_functions_llm', 'owner' = 'andrew_collins_rafael_nakamura', 'clasificacion' = 'interno')",
     "ALTER TABLE workspace.yelp_gold.gld_resenas_enriquecidas ALTER COLUMN review_id              COMMENT 'Identificador único de la reseña analizada (FK hacia slv_review)'",
@@ -87,7 +87,7 @@ display(spark.table("workspace.yelp_gold.gld_resenas_enriquecidas").limit(15))
 
 # COMMAND ----------
 
-# DBTITLE 1: 2. Detección de Inconsistencia Rating vs Sentimiento (Señal de Fraude para Trust & Safety)
+# DBTITLE 1,2. Detección de Inconsistencia Rating vs Sentimiento (Señal de Fraude para Trust & Safety)
 # MAGIC %sql
 # MAGIC -- Reseñas con 4-5 estrellas y sentimiento negativo (o 1-2 estrellas y sentimiento positivo)
 # MAGIC -- son candidatas prioritarias a revisión por el equipo de Rafael Nakamura (Trust & Safety).
@@ -111,7 +111,7 @@ display(spark.table("workspace.yelp_gold.gld_resenas_enriquecidas").limit(15))
 
 # COMMAND ----------
 
-# DBTITLE 1: 2.1 Matriz Resumen Rating vs Sentimiento y Dolor Operativo por Tema (REQ-06 — Producto: Andrew Collins)
+# DBTITLE 1,2.1 Matriz Resumen Rating vs Sentimiento y Dolor Operativo por Tema (REQ-06 — Producto: Andrew Collins)
 # MAGIC %sql
 # MAGIC -- Matriz agregada para incorporar directamente como visual en el Dashboard E8:
 # MAGIC -- Cruza el tema detectado por IA (servicio, comida, precio, ambiente) con el sentimiento y la consistencia.

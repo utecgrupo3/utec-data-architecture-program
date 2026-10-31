@@ -19,7 +19,7 @@ print("✔ Los 5 datasets están presentes")
 
 # COMMAND ----------
 
-# DBTITLE 1: Exploración rápida de esquemas y volúmenes
+# DBTITLE 1,Exploración rápida de esquemas y volúmenes
 for e in ESPERADOS:
     archivo_real = next((a for a in archivos if e in a), f"{e}.json.gz")
     df = spark.read.json(f"{RAW}/{archivo_real}")

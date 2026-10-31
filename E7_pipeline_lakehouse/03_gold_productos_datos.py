@@ -16,7 +16,7 @@
 
 # COMMAND ----------
 
-# DBTITLE 1: Inicialización de esquemas y helper de bitácora FinOps
+# DBTITLE 1,Inicialización de esquemas y helper de bitácora FinOps
 import time
 from pyspark.sql import functions as F
 
@@ -42,7 +42,7 @@ def registrar_bitacora(capa: str, tabla: str, filas: int, t0: float):
 
 # COMMAND ----------
 
-# DBTITLE 1: 1. Esquema Estrella Kimball — Dimensión Tiempo (gld_dim_tiempo generada con sequence + explode)
+# DBTITLE 1,1. Esquema Estrella Kimball — Dimensión Tiempo (gld_dim_tiempo generada con sequence + explode)
 t0 = time.time()
 spark.sql("""
 CREATE OR REPLACE TABLE workspace.yelp_gold.gld_dim_tiempo (
@@ -75,7 +75,7 @@ registrar_bitacora("gold", "workspace.yelp_gold.gld_dim_tiempo",
 
 # COMMAND ----------
 
-# DBTITLE 1: 2. Esquema Estrella Kimball — Dimensión Negocio (gld_dim_negocio con SCD1/SCD2) y Dimensión Usuario (gld_dim_usuario con PII enmascarada)
+# DBTITLE 1,2. Esquema Estrella Kimball — Dimensión Negocio (gld_dim_negocio con SCD1/SCD2) y Dimensión Usuario (gld_dim_usuario con PII enmascarada)
 # --- 2.1 gld_dim_negocio ---
 t0_dn = time.time()
 spark.sql("""
@@ -144,7 +144,7 @@ registrar_bitacora("gold", "workspace.yelp_gold.gld_dim_usuario",
 
 # COMMAND ----------
 
-# DBTITLE 1: 3. Esquema Estrella Kimball — Tabla de Hechos Atómica (gld_fact_resenas con FKs declaradas)
+# DBTITLE 1,3. Esquema Estrella Kimball — Tabla de Hechos Atómica (gld_fact_resenas con FKs declaradas)
 t0_fr = time.time()
 spark.sql("""
 CREATE OR REPLACE TABLE workspace.yelp_gold.gld_fact_resenas (
@@ -184,7 +184,7 @@ registrar_bitacora("gold", "workspace.yelp_gold.gld_fact_resenas",
 
 # COMMAND ----------
 
-# DBTITLE 1: 4. Producto Gold 1 — gld_kpi_negocio_mensual (Producto: Andrew Collins — Rating Promedio y Bayesiano ADR-02)
+# DBTITLE 1,4. Producto Gold 1 — gld_kpi_negocio_mensual (Producto: Andrew Collins — Rating Promedio y Bayesiano ADR-02)
 t0_kpi = time.time()
 spark.sql("""
 CREATE OR REPLACE TABLE workspace.yelp_gold.gld_kpi_negocio_mensual (
@@ -237,7 +237,7 @@ registrar_bitacora("gold", "workspace.yelp_gold.gld_kpi_negocio_mensual",
 
 # COMMAND ----------
 
-# DBTITLE 1: 5. Productos Gold 2, 3 y 4 — gld_checkins_diarios (Carla), gld_salud_resenas (Rafael) y gld_cohortes_retencion_mensual (Andrew)
+# DBTITLE 1,5. Productos Gold 2, 3 y 4 — gld_checkins_diarios (Carla), gld_salud_resenas (Rafael) y gld_cohortes_retencion_mensual (Andrew)
 # --- 5.1 gld_checkins_diarios (Operaciones Comerciales — HAI / ADR-01) ---
 t0_chk = time.time()
 spark.sql("""
@@ -342,7 +342,7 @@ registrar_bitacora("gold", "workspace.yelp_gold.gld_cohortes_retencion_mensual",
 
 # COMMAND ----------
 
-# DBTITLE 1: Validación — cada tabla gold tiene consumidor declarado y 100% de columnas con COMMENT
+# DBTITLE 1,Validación — cada tabla gold tiene consumidor declarado y 100% de columnas con COMMENT
 tablas_gold = [r.tableName for r in spark.sql("SHOW TABLES IN workspace.yelp_gold").collect()]
 assert len(tablas_gold) >= 5, f"Se esperan ≥5 objetos gold (hay {len(tablas_gold)})"
 

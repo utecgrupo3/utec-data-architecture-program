@@ -17,7 +17,7 @@
 
 # COMMAND ----------
 
-# DBTITLE 1: 1. Inicialización del esquema y tablas de gobierno DQ
+# DBTITLE 1,1. Inicialización del esquema y tablas de gobierno DQ
 spark.sql("CREATE SCHEMA IF NOT EXISTS workspace.yelp_gov")
 
 spark.sql("""
@@ -49,7 +49,7 @@ COMMENT 'E5 · Historial de ejecuciones del motor de calidad (insumo de E7 Quali
 
 # COMMAND ----------
 
-# DBTITLE 1: 2. Catálogo de 15 Reglas de Calidad (DQ-001 a DQ-015 — 6 dimensiones y 7 tablas Silver)
+# DBTITLE 1,2. Catálogo de 15 Reglas de Calidad (DQ-001 a DQ-015 — 6 dimensiones y 7 tablas Silver)
 from pyspark.sql import Row
 
 reglas = [
@@ -230,7 +230,7 @@ display(spark.table("workspace.yelp_gov.dq_reglas").orderBy("regla_id"))
 
 # COMMAND ----------
 
-# DBTITLE 1: 3. Motor genérico de evaluación (con soporte de historial multi-corrida)
+# DBTITLE 1,3. Motor genérico de evaluación (con soporte de historial multi-corrida)
 from pyspark.sql import functions as F
 
 def evaluar_reglas():
@@ -274,7 +274,7 @@ display(df_eval)
 
 # COMMAND ----------
 
-# DBTITLE 1: 4. Calidad Preventiva (Bonus DoD E5) — Constraints CHECK en tablas críticas Silver
+# DBTITLE 1,4. Calidad Preventiva (Bonus DoD E5) — Constraints CHECK en tablas críticas Silver
 # Diferencia entre Calidad Preventiva vs Detectiva:
 # - Preventiva: Delta Lake rechaza en el motor cualquier INSERT/MERGE que viole la constraint CHECK.
 # - Detectiva: El motor de reglas E5 audita las tablas y registra el % de cumplimiento en dq_resultados.
@@ -291,7 +291,7 @@ for tabla, nombre_chk, expresion_chk in [
 
 # COMMAND ----------
 
-# DBTITLE 1: 5. Scorecard de Calidad por Dimensión (Insumo directo del Dashboard E8 — Vista CDO)
+# DBTITLE 1,5. Scorecard de Calidad por Dimensión (Insumo directo del Dashboard E8 — Vista CDO)
 # MAGIC %sql
 # MAGIC SELECT r.dimension,
 # MAGIC        count(*)                                    AS reglas,
@@ -306,7 +306,7 @@ for tabla, nombre_chk, expresion_chk in [
 
 # COMMAND ----------
 
-# DBTITLE 1: 6. Auditoría de Registros Aislados en Cuarentena (Trazabilidad con Acta 02)
+# DBTITLE 1,6. Auditoría de Registros Aislados en Cuarentena (Trazabilidad con Acta 02)
 # MAGIC %sql
 # MAGIC SELECT motivo_rechazo,
 # MAGIC        count(*)                         AS filas_en_cuarentena,
@@ -344,5 +344,5 @@ for tabla, nombre_chk, expresion_chk in [
 
 # COMMAND ----------
 
-# DBTITLE 1: Retorno de estado para orquestación desde E7 (02_silver_limpieza.py)
+# DBTITLE 1,Retorno de estado para orquestación desde E7 (02_silver_limpieza.py)
 dbutils.notebook.exit("OK")

@@ -17,13 +17,13 @@
 
 # COMMAND ----------
 
-# DBTITLE 1: Asegurar existencia de los schemas Silver y Gold en Unity Catalog
+# DBTITLE 1,Asegurar existencia de los schemas Silver y Gold en Unity Catalog
 spark.sql("CREATE SCHEMA IF NOT EXISTS workspace.yelp_silver COMMENT 'Capa Silver: datos limpios, conformados en 3FN y con calidad validada — Grupo 03'")
 spark.sql("CREATE SCHEMA IF NOT EXISTS workspace.yelp_gold COMMENT 'Capa Gold: modelo dimensional Kimball y productos de datos certificados — Grupo 03'")
 
 # COMMAND ----------
 
-# DBTITLE 1: 1. Entidad Silver — slv_business (Negocios locales + ADR-03 ARRAY<STRING>)
+# DBTITLE 1,1. Entidad Silver — slv_business (Negocios locales + ADR-03 ARRAY<STRING>)
 # MAGIC %sql
 # MAGIC -- ======================= 1.1 ENTIDAD SILVER: slv_business =======================
 # MAGIC CREATE TABLE IF NOT EXISTS workspace.yelp_silver.slv_business (
@@ -52,7 +52,7 @@ spark.sql("CREATE SCHEMA IF NOT EXISTS workspace.yelp_gold COMMENT 'Capa Gold: m
 
 # COMMAND ----------
 
-# DBTITLE 1: 2. Entidades Silver — slv_user (Usuarios con PII) y slv_amistad (Grafo Social v1.2)
+# DBTITLE 1,2. Entidades Silver — slv_user (Usuarios con PII) y slv_amistad (Grafo Social v1.2)
 # MAGIC %sql
 # MAGIC -- ======================= 1.2 ENTIDAD SILVER: slv_user =======================
 # MAGIC -- Nota de Gobierno (E6 / ADR-06): La columna 'name' contiene PII directa y se protege
@@ -87,7 +87,7 @@ spark.sql("CREATE SCHEMA IF NOT EXISTS workspace.yelp_gold COMMENT 'Capa Gold: m
 
 # COMMAND ----------
 
-# DBTITLE 1: 3. Entidades Silver — slv_review (Reseñas Verificadas) y slv_review_cuarentena (Aislamiento DQ)
+# DBTITLE 1,3. Entidades Silver — slv_review (Reseñas Verificadas) y slv_review_cuarentena (Aislamiento DQ)
 # MAGIC %sql
 # MAGIC -- ======================= 1.4 ENTIDAD SILVER: slv_review =======================
 # MAGIC -- Tratamiento de 'text' (PII indirecta): el comentario libre puede contener nombres o datos de terceros;
@@ -133,7 +133,7 @@ spark.sql("CREATE SCHEMA IF NOT EXISTS workspace.yelp_gold COMMENT 'Capa Gold: m
 
 # COMMAND ----------
 
-# DBTITLE 1: 4. Entidades Silver — slv_tip (Consejos breves) y slv_checkin (Visitas a grano evento ADR-01)
+# DBTITLE 1,4. Entidades Silver — slv_tip (Consejos breves) y slv_checkin (Visitas a grano evento ADR-01)
 # MAGIC %sql
 # MAGIC -- ======================= 1.6 ENTIDAD SILVER: slv_tip =======================
 # MAGIC CREATE TABLE IF NOT EXISTS workspace.yelp_silver.slv_tip (
@@ -167,7 +167,7 @@ spark.sql("CREATE SCHEMA IF NOT EXISTS workspace.yelp_gold COMMENT 'Capa Gold: m
 
 # COMMAND ----------
 
-# DBTITLE 1: 5. Capa Gold Dimensional (Esquema Estrella Kimball — ADR-05)
+# DBTITLE 1,5. Capa Gold Dimensional (Esquema Estrella Kimball — ADR-05)
 # MAGIC %sql
 # MAGIC -- ======================= 2.1 DIMENSIÓN GOLD: gld_dim_negocio (SCD Tipo 1 y 2) =======================
 # MAGIC CREATE TABLE IF NOT EXISTS workspace.yelp_gold.gld_dim_negocio (
@@ -235,7 +235,7 @@ spark.sql("CREATE SCHEMA IF NOT EXISTS workspace.yelp_gold COMMENT 'Capa Gold: m
 
 # COMMAND ----------
 
-# DBTITLE 1: 6. Capa Gold — Tablas de KPIs y Productos Agregados por Stakeholder (Sección 7 Doc Formal)
+# DBTITLE 1,6. Capa Gold — Tablas de KPIs y Productos Agregados por Stakeholder (Sección 7 Doc Formal)
 # MAGIC %sql
 # MAGIC -- ======================= 2.5 PRODUCTO GOLD: gld_kpi_negocio_mensual =======================
 # MAGIC CREATE TABLE IF NOT EXISTS workspace.yelp_gold.gld_kpi_negocio_mensual (
@@ -286,7 +286,7 @@ spark.sql("CREATE SCHEMA IF NOT EXISTS workspace.yelp_gold COMMENT 'Capa Gold: m
 
 # COMMAND ----------
 
-# DBTITLE 1: Validación automática del entregable (correr antes del PR)
+# DBTITLE 1,Validación automática del entregable (correr antes del PR)
 tablas = spark.sql("SHOW TABLES IN workspace.yelp_silver").collect()
 assert len(tablas) >= 5, f"Deben existir al menos las 5 entidades en silver (hay {len(tablas)})"
 
