@@ -45,7 +45,7 @@ def registrar_bitacora(capa: str, tabla: str, filas: int, t0: float):
 # DBTITLE 1,1. Esquema Estrella Kimball — Dimensión Tiempo (gld_dim_tiempo generada con sequence + explode)
 t0 = time.time()
 spark.sql("""
-CREATE OR REPLACE TABLE workspace.yelp_gold.gld_dim_tiempo (
+CREATE TABLE IF NOT EXISTS workspace.yelp_gold.gld_dim_tiempo (
   date_sk      INT     NOT NULL COMMENT 'Clave subrogada entera de fecha en formato YYYYMMDD',
   fecha        DATE    NOT NULL COMMENT 'Fecha calendario en formato estándar YYYY-MM-DD',
   anio         INT     NOT NULL COMMENT 'Año calendario de cuatro dígitos (ej. 2026)',
@@ -57,7 +57,10 @@ CREATE OR REPLACE TABLE workspace.yelp_gold.gld_dim_tiempo (
 )
 COMMENT 'Dimensión calendario generada programáticamente para el esquema estrella Kimball. Consumidor: Transversal.'
 TBLPROPERTIES (delta.enableChangeDataFeed = true)
-AS
+""")
+
+spark.sql("""
+INSERT OVERWRITE workspace.yelp_gold.gld_dim_tiempo
 SELECT
   CAST(date_format(fecha, 'yyyyMMdd') AS INT) AS date_sk,
   fecha                                       AS fecha,
@@ -79,7 +82,7 @@ registrar_bitacora("gold", "workspace.yelp_gold.gld_dim_tiempo",
 # --- 2.1 gld_dim_negocio ---
 t0_dn = time.time()
 spark.sql("""
-CREATE OR REPLACE TABLE workspace.yelp_gold.gld_dim_negocio (
+CREATE TABLE IF NOT EXISTS workspace.yelp_gold.gld_dim_negocio (
   business_sk            STRING        NOT NULL COMMENT 'Clave subrogada (surrogate key) de la dimensión negocio',
   business_id            STRING        NOT NULL COMMENT 'Clave natural del establecimiento comercial en YelpConnect',
   nombre                 STRING        NOT NULL COMMENT 'Nombre comercial del establecimiento (SCD Tipo 1)',
@@ -95,7 +98,10 @@ CREATE OR REPLACE TABLE workspace.yelp_gold.gld_dim_negocio (
 )
 COMMENT 'Dimensión conforme de Negocios con soporte híbrido SCD Tipo 1 y Tipo 2. Consumidor: Producto y Data Science.'
 TBLPROPERTIES (delta.enableChangeDataFeed = true)
-AS
+""")
+
+spark.sql("""
+INSERT OVERWRITE workspace.yelp_gold.gld_dim_negocio
 SELECT
   sha2(concat_ws('|', business_id, cast(esta_abierto AS STRING)), 256) AS business_sk,
   business_id,
@@ -116,7 +122,7 @@ registrar_bitacora("gold", "workspace.yelp_gold.gld_dim_negocio",
 # --- 2.2 gld_dim_usuario (con enmascaramiento de PII según ADR-06) ---
 t0_du = time.time()
 spark.sql("""
-CREATE OR REPLACE TABLE workspace.yelp_gold.gld_dim_usuario (
+CREATE TABLE IF NOT EXISTS workspace.yelp_gold.gld_dim_usuario (
   user_sk        STRING    NOT NULL COMMENT 'Clave subrogada (surrogate key) de la dimensión usuario',
   user_id        STRING    NOT NULL COMMENT 'Clave natural seudonimizada del usuario en YelpConnect',
   name_masked    STRING    NOT NULL COMMENT 'Nombre del usuario anonimizado/enmascarado para consumo analítico seguro (ADR-06)',
@@ -128,7 +134,10 @@ CREATE OR REPLACE TABLE workspace.yelp_gold.gld_dim_usuario (
 )
 COMMENT 'Dimensión conforme de Usuarios con privacidad por diseño (nombre enmascarado). Consumidor: Producto y Data Science.'
 TBLPROPERTIES (delta.enableChangeDataFeed = true)
-AS
+""")
+
+spark.sql("""
+INSERT OVERWRITE workspace.yelp_gold.gld_dim_usuario
 SELECT
   sha2(user_id, 256)                                   AS user_sk,
   user_id,
@@ -147,7 +156,7 @@ registrar_bitacora("gold", "workspace.yelp_gold.gld_dim_usuario",
 # DBTITLE 1,3. Esquema Estrella Kimball — Tabla de Hechos Atómica (gld_fact_resenas con FKs declaradas)
 t0_fr = time.time()
 spark.sql("""
-CREATE OR REPLACE TABLE workspace.yelp_gold.gld_fact_resenas (
+CREATE TABLE IF NOT EXISTS workspace.yelp_gold.gld_fact_resenas (
   review_sk    STRING  NOT NULL COMMENT 'Clave subrogada del hecho atómico de reseña',
   review_id    STRING  NOT NULL COMMENT 'Clave degenerada con el identificador original de la reseña verificada',
   business_sk  STRING  NOT NULL COMMENT 'Clave foránea hacia la dimensión de negocios (gld_dim_negocio)',
@@ -163,7 +172,10 @@ CREATE OR REPLACE TABLE workspace.yelp_gold.gld_fact_resenas (
 )
 COMMENT 'Tabla de hechos transaccional atómica (grano: 1 fila por reseña verificada). Consumidor: Producto y Data Science (Mei Lin).'
 TBLPROPERTIES (delta.enableChangeDataFeed = true)
-AS
+""")
+
+spark.sql("""
+INSERT OVERWRITE workspace.yelp_gold.gld_fact_resenas
 SELECT
   sha2(r.review_id, 256)                                   AS review_sk,
   r.review_id                                              AS review_id,
@@ -187,7 +199,7 @@ registrar_bitacora("gold", "workspace.yelp_gold.gld_fact_resenas",
 # DBTITLE 1,4. Producto Gold 1 — gld_kpi_negocio_mensual (Producto: Andrew Collins — Rating Promedio y Bayesiano ADR-02)
 t0_kpi = time.time()
 spark.sql("""
-CREATE OR REPLACE TABLE workspace.yelp_gold.gld_kpi_negocio_mensual (
+CREATE TABLE IF NOT EXISTS workspace.yelp_gold.gld_kpi_negocio_mensual (
   business_id       STRING    NOT NULL COMMENT 'Identificador único del establecimiento comercial evaluado',
   nombre            STRING    NOT NULL COMMENT 'Nombre comercial del negocio para visualización en el dashboard E8',
   ciudad            STRING    NOT NULL COMMENT 'Ciudad normalizada del establecimiento comercial',
@@ -200,7 +212,10 @@ CREATE OR REPLACE TABLE workspace.yelp_gold.gld_kpi_negocio_mensual (
 )
 COMMENT 'KPIs mensuales de satisfacción y volumen por negocio. Stakeholder: Producto (Andrew Collins — REQ-01).'
 TBLPROPERTIES (delta.enableChangeDataFeed = true)
-AS
+""")
+
+spark.sql("""
+INSERT OVERWRITE workspace.yelp_gold.gld_kpi_negocio_mensual
 WITH media_ciudad AS (
   SELECT b.ciudad, avg(CAST(r.stars AS DOUBLE)) AS c_global
   FROM workspace.yelp_silver.slv_review r
@@ -241,7 +256,7 @@ registrar_bitacora("gold", "workspace.yelp_gold.gld_kpi_negocio_mensual",
 # --- 5.1 gld_checkins_diarios (Operaciones Comerciales — HAI / ADR-01) ---
 t0_chk = time.time()
 spark.sql("""
-CREATE OR REPLACE TABLE workspace.yelp_gold.gld_checkins_diarios (
+CREATE TABLE IF NOT EXISTS workspace.yelp_gold.gld_checkins_diarios (
   business_id       STRING  NOT NULL COMMENT 'Identificador del establecimiento comercial visitado',
   fecha             DATE    NOT NULL COMMENT 'Fecha calendario de las visitas presenciales confirmadas',
   checkins_validos  BIGINT  NOT NULL COMMENT 'Conteo oficial homologado de check-ins válidos deduplicados por hora (HAI - ADR-01)',
@@ -249,7 +264,10 @@ CREATE OR REPLACE TABLE workspace.yelp_gold.gld_checkins_diarios (
 )
 COMMENT 'Conteo oficial diario de check-ins válidos para liquidación publicitaria y fidelidad. Stakeholder: Operaciones Comerciales (Carla Romero — REQ-02, REQ-05).'
 TBLPROPERTIES (delta.enableChangeDataFeed = true)
-AS
+""")
+
+spark.sql("""
+INSERT OVERWRITE workspace.yelp_gold.gld_checkins_diarios
 SELECT
   business_id,
   to_date(fecha_checkin) AS fecha,
@@ -263,7 +281,7 @@ registrar_bitacora("gold", "workspace.yelp_gold.gld_checkins_diarios",
 # --- 5.2 gld_salud_resenas (Trust & Safety — Rafael Nakamura / REQ-03) ---
 t0_sal = time.time()
 spark.sql("""
-CREATE OR REPLACE TABLE workspace.yelp_gold.gld_salud_resenas (
+CREATE TABLE IF NOT EXISTS workspace.yelp_gold.gld_salud_resenas (
   mes                  TIMESTAMP NOT NULL COMMENT 'Mes calendario de auditoría de calidad y moderación de reseñas',
   resenas_verificadas  BIGINT    NOT NULL COMMENT 'Volumen mensual de reseñas que aprobaron el 100% de reglas DQ críticas',
   resenas_cuarentena   BIGINT    NOT NULL COMMENT 'Volumen mensual de reseñas aisladas preventivamente en slv_review_cuarentena',
@@ -272,7 +290,10 @@ CREATE OR REPLACE TABLE workspace.yelp_gold.gld_salud_resenas (
 )
 COMMENT 'Métricas mensuales de salud de calidad de reseñas y tasa de cuarentena. Stakeholder: Trust & Safety (Rafael Nakamura — REQ-03).'
 TBLPROPERTIES (delta.enableChangeDataFeed = true)
-AS
+""")
+
+spark.sql("""
+INSERT OVERWRITE workspace.yelp_gold.gld_salud_resenas
 WITH ok AS (
   SELECT date_trunc('month', fecha_resena) AS mes, count(*) AS resenas_verificadas
   FROM workspace.yelp_silver.slv_review
@@ -302,7 +323,7 @@ registrar_bitacora("gold", "workspace.yelp_gold.gld_salud_resenas",
 # --- 5.3 gld_cohortes_retencion_mensual (Producto — Andrew Collins / REQ-04) ---
 t0_coh = time.time()
 spark.sql("""
-CREATE OR REPLACE TABLE workspace.yelp_gold.gld_cohortes_retencion_mensual (
+CREATE TABLE IF NOT EXISTS workspace.yelp_gold.gld_cohortes_retencion_mensual (
   cohorte_mes       DATE    NOT NULL COMMENT 'Mes calendario de registro original del usuario (cohorte de adquisición)',
   mes_actividad     DATE    NOT NULL COMMENT 'Mes calendario en el que se registra la interacción recurrente de la cohorte',
   usuarios_activos  BIGINT  NOT NULL COMMENT 'Cantidad de usuarios únicos de la cohorte con actividad validada en el mes',
@@ -311,7 +332,10 @@ CREATE OR REPLACE TABLE workspace.yelp_gold.gld_cohortes_retencion_mensual (
 )
 COMMENT 'Matriz mensual de retención de cohortes de usuarios (CRR). Stakeholder: Producto (Andrew Collins — REQ-04).'
 TBLPROPERTIES (delta.enableChangeDataFeed = true)
-AS
+""")
+
+spark.sql("""
+INSERT OVERWRITE workspace.yelp_gold.gld_cohortes_retencion_mensual
 WITH base_cohortes AS (
   SELECT
     to_date(date_trunc('month', yelping_since)) AS cohorte_mes,
