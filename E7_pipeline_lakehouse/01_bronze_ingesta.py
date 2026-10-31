@@ -49,7 +49,7 @@ def registrar_bitacora(capa: str, tabla: str, filas: int, t0: float):
 for e in ENTIDADES:
     t0 = time.time()
     tabla_destino = f"workspace.yelp_bronze.brz_{e}"
-    (spark.read.json(f"{RAW}/{e}.json.gz")
+    (spark.read.json(f"{RAW}/{e}.json*")
         .withColumn("_archivo_origen", F.col("_metadata.file_path"))
         .withColumn("_fecha_ingesta", F.current_timestamp())
         .write.mode("overwrite")
@@ -71,7 +71,7 @@ query = (spark.readStream
     .option("cloudFiles.schemaLocation", CHECKPOINT + "/schema")
     .option("cloudFiles.inferColumnTypes", "true")
     .option("cloudFiles.schemaEvolutionMode", "addNewColumns")
-    .load(f"{RAW}/review*.json.gz")
+    .load(f"{RAW}/review*.json*")
     .withColumn("_archivo_origen", F.col("_metadata.file_path"))
     .withColumn("_fecha_ingesta", F.current_timestamp())
  .writeStream
