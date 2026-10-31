@@ -20,16 +20,25 @@
 # MAGIC %sql
 # MAGIC -- Responde a REQ-01 (Andrew Collins, VP of Product):
 # MAGIC -- ¿Cómo evoluciona mensualmente el volumen de reseñas verificadas, el rating aritmético y el Rating Ponderado Bayesiano (ADR-02)?
-# MAGIC WITH mensual AS (
+# MAGIC WITH votos_mes AS (
 # MAGIC   SELECT
-# MAGIC     mes,
-# MAGIC     sum(n_resenas)                         AS resenas_verificadas,
-# MAGIC     sum(usuarios_unicos)                   AS usuarios_activos_mes,
-# MAGIC     sum(useful_total)                      AS votos_utilidad_total,
-# MAGIC     round(avg(rating_promedio), 2)         AS rating_aritmetico,
-# MAGIC     round(avg(rating_bayesiano), 2)        AS rating_bayesiano_bwr
-# MAGIC   FROM workspace.yelp_gold.gld_kpi_negocio_mensual
-# MAGIC   GROUP BY mes
+# MAGIC     date_trunc('month', t.fecha)           AS mes,
+# MAGIC     sum(f.useful)                          AS votos_utilidad_total
+# MAGIC   FROM workspace.yelp_gold.gld_fact_resenas f
+# MAGIC   JOIN workspace.yelp_gold.gld_dim_tiempo t ON f.date_sk = t.date_sk
+# MAGIC   GROUP BY date_trunc('month', t.fecha)
+# MAGIC ),
+# MAGIC mensual AS (
+# MAGIC   SELECT
+# MAGIC     k.mes,
+# MAGIC     sum(k.n_resenas)                         AS resenas_verificadas,
+# MAGIC     sum(k.usuarios_unicos)                   AS usuarios_activos_mes,
+# MAGIC     coalesce(max(v.votos_utilidad_total), 0) AS votos_utilidad_total,
+# MAGIC     round(avg(k.rating_promedio), 2)         AS rating_aritmetico,
+# MAGIC     round(avg(k.rating_bayesiano), 2)        AS rating_bayesiano_bwr
+# MAGIC   FROM workspace.yelp_gold.gld_kpi_negocio_mensual k
+# MAGIC   LEFT JOIN votos_mes v ON k.mes = v.mes
+# MAGIC   GROUP BY k.mes
 # MAGIC )
 # MAGIC SELECT
 # MAGIC   mes,
@@ -88,6 +97,13 @@
 # MAGIC %sql
 # MAGIC -- Responde a REQ-01 y REQ-02 (Andrew Collins, VP of Product):
 # MAGIC -- Ranking de establecimientos para la insignia "Comercio Recomendado" evitando el sesgo de muestras pequeñas mediante BWR (ADR-02).
+# MAGIC WITH votos_negocio AS (
+# MAGIC   SELECT
+# MAGIC     business_sk,
+# MAGIC     sum(useful) AS votos_useful_acumulados
+# MAGIC   FROM workspace.yelp_gold.gld_fact_resenas
+# MAGIC   GROUP BY business_sk
+# MAGIC )
 # MAGIC SELECT
 # MAGIC   n.business_id,
 # MAGIC   n.nombre                                             AS nombre_comercio,
@@ -99,11 +115,13 @@
 # MAGIC   sum(k.usuarios_unicos)                               AS total_usuarios_unicos,
 # MAGIC   round(avg(k.rating_promedio), 2)                     AS rating_aritmetico_simple,
 # MAGIC   round(avg(k.rating_bayesiano), 2)                    AS rating_bayesiano_bwr,
-# MAGIC   sum(k.useful_total)                                  AS votos_useful_acumulados,
-# MAGIC   round(sum(k.useful_total) / nullif(sum(k.n_resenas), 0), 2) AS indice_utilidad_cur
+# MAGIC   coalesce(max(v.votos_useful_acumulados), 0)          AS votos_useful_acumulados,
+# MAGIC   round(coalesce(max(v.votos_useful_acumulados), 0) / nullif(sum(k.n_resenas), 0), 2) AS indice_utilidad_cur
 # MAGIC FROM workspace.yelp_gold.gld_kpi_negocio_mensual k
 # MAGIC JOIN workspace.yelp_gold.gld_dim_negocio n
 # MAGIC   ON k.business_id = n.business_id AND n.es_actual = true
+# MAGIC LEFT JOIN votos_negocio v
+# MAGIC   ON n.business_sk = v.business_sk
 # MAGIC GROUP BY n.business_id, n.nombre, n.ciudad, n.estado, n.categoria_principal, n.esta_abierto
 # MAGIC HAVING sum(k.n_resenas) >= 5
 # MAGIC ORDER BY rating_bayesiano_bwr DESC, total_resenas_verificadas DESC
@@ -117,7 +135,7 @@
 # MAGIC -- Conteo oficial homologado de visitas físicas deduplicadas por ventana horaria de 60 minutos (ADR-01 / Acta 01).
 # MAGIC SELECT
 # MAGIC   date_trunc('month', c.fecha)                         AS mes_actividad,
-# MAGIC   c.ciudad,
+# MAGIC   n.ciudad,
 # MAGIC   n.categoria_principal,
 # MAGIC   count(DISTINCT c.business_id)                        AS comercios_con_trafico,
 # MAGIC   sum(c.checkins_validos)                              AS indice_afluencia_homologada_hai,
@@ -125,7 +143,7 @@
 # MAGIC FROM workspace.yelp_gold.gld_checkins_diarios c
 # MAGIC JOIN workspace.yelp_gold.gld_dim_negocio n
 # MAGIC   ON c.business_id = n.business_id AND n.es_actual = true
-# MAGIC GROUP BY date_trunc('month', c.fecha), c.ciudad, n.categoria_principal
+# MAGIC GROUP BY date_trunc('month', c.fecha), n.ciudad, n.categoria_principal
 # MAGIC ORDER BY mes_actividad DESC, indice_afluencia_homologada_hai DESC;
 
 # COMMAND ----------
@@ -135,20 +153,20 @@
 # MAGIC -- Responde a REQ-03 (Rafael Nakamura, Lead Trust & Safety / Andrew Collins, VP of Product):
 # MAGIC -- ¿Qué porcentaje de reseñas son aisladas en cuarentena por sospecha de duplicidad o incumplimiento DQ (Acta 02)?
 # MAGIC SELECT
-# MAGIC   date_trunc('month', fecha)                           AS mes_evaluacion,
-# MAGIC   sum(resenas_validas)                                 AS resenas_publicadas_gold,
+# MAGIC   date_trunc('month', mes)                             AS mes_evaluacion,
+# MAGIC   sum(resenas_verificadas)                             AS resenas_publicadas_gold,
 # MAGIC   sum(resenas_cuarentena)                              AS resenas_aisladas_cuarentena,
-# MAGIC   sum(resenas_validas + resenas_cuarentena)            AS total_resenas_procesadas,
+# MAGIC   sum(resenas_verificadas + resenas_cuarentena)        AS total_resenas_procesadas,
 # MAGIC   round(
-# MAGIC     100.0 * sum(resenas_validas) / nullif(sum(resenas_validas + resenas_cuarentena), 0),
+# MAGIC     100.0 * sum(resenas_verificadas) / nullif(sum(resenas_verificadas + resenas_cuarentena), 0),
 # MAGIC     2
 # MAGIC   )                                                    AS ratio_salud_resenas_rhr_pct,
 # MAGIC   round(
-# MAGIC     100.0 * sum(resenas_cuarentena) / nullif(sum(resenas_validas + resenas_cuarentena), 0),
+# MAGIC     100.0 * sum(resenas_cuarentena) / nullif(sum(resenas_verificadas + resenas_cuarentena), 0),
 # MAGIC     2
 # MAGIC   )                                                    AS tasa_rechazo_cuarentena_pct
 # MAGIC FROM workspace.yelp_gold.gld_salud_resenas
-# MAGIC GROUP BY date_trunc('month', fecha)
+# MAGIC GROUP BY date_trunc('month', mes)
 # MAGIC ORDER BY mes_evaluacion DESC;
 
 # COMMAND ----------
@@ -157,14 +175,24 @@
 # MAGIC %sql
 # MAGIC -- Responde a REQ-04 (Andrew Collins, VP of Product):
 # MAGIC -- ¿Cuál es la tasa de retención de cohortes de usuarios según su mes/año de registro (yelping_since) a lo largo de su ciclo de vida?
+# MAGIC WITH cohortes AS (
+# MAGIC   SELECT
+# MAGIC     cohorte_mes,
+# MAGIC     mes_actividad,
+# MAGIC     CAST(round(months_between(mes_actividad, cohorte_mes), 0) AS INT)              AS mes_relativo,
+# MAGIC     CAST(round(usuarios_activos * 100.0 / nullif(retencion_pct, 0), 0) AS BIGINT)  AS usuarios_cohorte,
+# MAGIC     usuarios_activos,
+# MAGIC     retencion_pct                                                                  AS tasa_retencion_crr_pct
+# MAGIC   FROM workspace.yelp_gold.gld_cohortes_retencion_mensual
+# MAGIC )
 # MAGIC SELECT
 # MAGIC   cohorte_mes,
 # MAGIC   mes_actividad,
 # MAGIC   mes_relativo,
 # MAGIC   usuarios_cohorte,
 # MAGIC   usuarios_activos,
-# MAGIC   retencion_pct                                        AS tasa_retencion_crr_pct
-# MAGIC FROM workspace.yelp_gold.gld_cohortes_retencion_mensual
+# MAGIC   tasa_retencion_crr_pct
+# MAGIC FROM cohortes
 # MAGIC WHERE mes_relativo BETWEEN 0 AND 24
 # MAGIC ORDER BY cohorte_mes DESC, mes_relativo ASC
 # MAGIC LIMIT 100;
@@ -205,11 +233,11 @@
 # MAGIC ### 2.2. Instrucciones del Sistema y Sinónimos del Glosario E4 (Copiar en *Genie → Instructions*)
 # MAGIC ```text
 # MAGIC Contexto de Negocio — Plataforma YelpConnect (Grupo 03 · Data Evolution):
-# MAGIC 1. "Rating oficial", "calificación justa" o "Rating Bayesiano (BWR)": usa SIEMPRE la columna `rating_bayesiano` de `workspace.yelp_gold.gld_kpi_negocio_mensual` (ponderado con umbral m=10 según ADR-02), nunca el promedio simple `rating_promedio`, salvo que el usuario pida explícitamente comparar ambos.
+# MAGIC 1. "Rating oficial", "calificación justa" o "Rating Bayesiano (BWR)": usa SIEMPRE la columna `rating_bayesiano` de `workspace.yelp_gold.gld_kpi_negocio_mensual` (ponderado con umbral m=25 según ADR-02), nunca el promedio simple `rating_promedio`, salvo que el usuario pida explícitamente comparar ambos.
 # MAGIC 2. "Afluencia", "visitas físicas", "tráfico en tienda" o "Check-in Válido (HAI)": consulta `checkins_validos` en `workspace.yelp_gold.gld_checkins_diarios` (deduplicados por ventana horaria de 60 minutos según ADR-01 / Acta 01).
-# MAGIC 3. "Reseña Verificada": son los registros en `gld_fact_resenas` o `resenas_validas` en `gld_salud_resenas` que aprobaron el 100% de las reglas de calidad DQ-001 a DQ-015.
-# MAGIC 4. "Reseña en Cuarentena", "spam", "bots" o "rechazos de calidad": consulta `resenas_cuarentena` en `workspace.yelp_gold.gld_salud_resenas` y calcula el Ratio de Salud RHR = `pct_salud`.
-# MAGIC 5. "Retención de usuarios", "lealtad" o "Cohorte (CRR)": usa `retencion_pct` y `mes_relativo` en `workspace.yelp_gold.gld_cohortes_retencion_mensual` filtrando `mes_relativo > 0` cuando se pregunte por retención post-registro.
+# MAGIC 3. "Reseña Verificada": son los registros en `gld_fact_resenas` o `resenas_verificadas` en `gld_salud_resenas` que aprobaron el 100% de las reglas de calidad DQ-001 a DQ-015.
+# MAGIC 4. "Reseña en Cuarentena", "spam", "bots" o "rechazos de calidad": consulta `resenas_cuarentena` y `pct_cuarentena` en `workspace.yelp_gold.gld_salud_resenas`, y calcula el Ratio de Salud RHR = `100.0 - pct_cuarentena`.
+# MAGIC 5. "Retención de usuarios", "lealtad" o "Cohorte (CRR)": usa `retencion_pct` en `workspace.yelp_gold.gld_cohortes_retencion_mensual` filtrando `mes_actividad > cohorte_mes` (`months_between(mes_actividad, cohorte_mes) > 0`) cuando se pregunte por retención post-registro.
 # MAGIC 6. "Comercio activo" o "negocio vigente": filtra siempre `es_actual = true` y `esta_abierto = true` en `workspace.yelp_gold.gld_dim_negocio`.
 # MAGIC ```
 # MAGIC
@@ -219,8 +247,8 @@
 # MAGIC | :--- | :--- | :--- | :--- |
 # MAGIC | **P1** | *"¿Cuáles son los 10 comercios abiertos con mejor calificación oficial en la plataforma y cuántas reseñas verificadas tienen?"* | **Correcto (1.ª intención):** Genie cruzó `gld_kpi_negocio_mensual` con `gld_dim_negocio` (`esta_abierto = true AND es_actual = true`) ordenando por `avg(rating_bayesiano) DESC`. | La instrucción #1 evitó que Genie ordenara negocios con 1 sola reseña de 5.0 estrellas. |
 # MAGIC | **P2** | *"¿Cómo ha evolucionado mensualmente la cantidad de visitas físicas (check-ins válidos) por categoría principal de negocio?"* | **Correcto (1.ª intención):** Genie agrupó `sum(checkins_validos)` de `gld_checkins_diarios` unido a `gld_dim_negocio.categoria_principal` por mes. | El sinónimo `"visitas físicas" -> checkins_validos` del Glosario E4 guió la selección exacta de tabla. |
-# MAGIC | **P3** | *"¿Qué porcentaje de reseñas fueron enviadas a cuarentena cada mes y cuál es el ratio de salud RHR?"* | **Correcto (1.ª intención):** Consultó `gld_salud_resenas` calculando `sum(resenas_cuarentena)` y `avg(pct_salud)` por mes. | Alineado 1:1 con el requerimiento **REQ-03** de Rafael Nakamura. |
-# MAGIC | **P4 (Caso de Fallo + Corrección)** | *"¿Cuál es la tasa de retención promedio de las cohortes de usuarios después de su registro?"* | **Fallo inicial:** En el primer intento sin la cláusula de exclusión del mes cero, Genie promedió `retencion_pct` incluyendo `mes_relativo = 0` (donde la retención es siempre `100.0%` por definición de alta), inflando el promedio. | **Corrección aplicada:** Se actualizó la Instrucción #5 en Genie agregando *"filtrando `mes_relativo > 0` cuando se pregunte por retención post-registro"*. Al re-preguntar, Genie aplicó `WHERE mes_relativo > 0` entregando la curva real de retención. |
+# MAGIC | **P3** | *"¿Qué porcentaje de reseñas fueron enviadas a cuarentena cada mes y cuál es el ratio de salud RHR?"* | **Correcto (1.ª intención):** Consultó `gld_salud_resenas` calculando `sum(resenas_cuarentena)` y `100.0 - avg(pct_cuarentena)` por `mes`. | Alineado 1:1 con el requerimiento **REQ-03** de Rafael Nakamura. |
+# MAGIC | **P4 (Caso de Fallo + Corrección)** | *"¿Cuál es la tasa de retención promedio de las cohortes de usuarios después de su registro?"* | **Fallo inicial:** En el primer intento sin la cláusula de exclusión del mes cero, Genie promedió `retencion_pct` incluyendo `mes_actividad = cohorte_mes` (donde la retención es siempre `100.0%` por definición de alta), inflando el promedio. | **Corrección aplicada:** Se actualizó la Instrucción #5 en Genie agregando *"filtrando `mes_actividad > cohorte_mes` cuando se pregunte por retención post-registro"*. Al re-preguntar, Genie aplicó `WHERE mes_actividad > cohorte_mes` entregando la curva real de retención. |
 # MAGIC
 # MAGIC ---
 # MAGIC ## 3. Storytelling Ejecutivo por Página del AI/BI Dashboard
