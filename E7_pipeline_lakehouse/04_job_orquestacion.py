@@ -13,12 +13,12 @@
 # MAGIC ---
 # MAGIC ## 1. Grafo de Tareas del Lakeflow Job (`pipeline_lakehouse_yelp_grupo03`)
 # MAGIC ```
-# MAGIC 01_bronze_ingesta ──► 02_silver_limpieza ──► 03_gold_productos_datos
-# MAGIC                              │ (el gate DQ vive dentro de silver)
+# MAGIC 01_bronze_ingesta ──► 02_silver_limpieza ──► 03_gold_productos_datos ──► 04_controles_gobierno (E6)
+# MAGIC                              │ (el gate DQ de E5 vive dentro de silver)
 # MAGIC                              └─► si falla → notificación por email a grupo3arqdatos@proton.me
 # MAGIC ```
 # MAGIC Configuración implementada:
-# MAGIC - [x] **3 tareas encadenadas con dependencias `ALL_SUCCESS`** (`bronze_ingesta` → `silver_limpieza` → `gold_productos_datos`).
+# MAGIC - [x] **4 tareas encadenadas con dependencias `ALL_SUCCESS`** (`01_bronze_ingesta` → `02_silver_limpieza [con Quality Gate E5]` → `03_gold_productos_datos` → `04_controles_gobierno [E6 Unity Catalog]`).
 # MAGIC - [x] **Retries:** 1 reintento automático con backoff en cada tarea.
 # MAGIC - [x] **Timeout por tarea:** 1,200 segundos (20 min) por tarea para proteger la cuota diaria de Databricks Free Edition.
 # MAGIC - [x] **Notificación `on_failure`:** correo del equipo (`grupo3arqdatos@proton.me`).
@@ -47,7 +47,7 @@ tareas_dag = [
     ),
     jobs.Task(
         task_key="02_silver_limpieza",
-        description="Conformación 3FN, deduplicación, cuarentena y ejecución del Quality Gate E5",
+        description="Conformación 3FN, deduplicación, cuarentena y ejecución del Quality Gate E5 (01_reglas_calidad)",
         depends_on=[jobs.TaskDependency(task_key="01_bronze_ingesta")],
         run_if=jobs.RunIf.ALL_SUCCESS,
         notebook_task=jobs.NotebookTask(
@@ -63,6 +63,17 @@ tareas_dag = [
         run_if=jobs.RunIf.ALL_SUCCESS,
         notebook_task=jobs.NotebookTask(
             notebook_path=f"{USUARIO_REPO}/E7_pipeline_lakehouse/03_gold_productos_datos",
+            source=jobs.Source.WORKSPACE,
+        ),
+        timeout_seconds=1200,
+    ),
+    jobs.Task(
+        task_key="04_controles_gobierno",
+        description="Aplicación de controles E6 en Unity Catalog (Matriz RACI, Tags, Grants RBAC y Column Mask PII)",
+        depends_on=[jobs.TaskDependency(task_key="03_gold_productos_datos")],
+        run_if=jobs.RunIf.ALL_SUCCESS,
+        notebook_task=jobs.NotebookTask(
+            notebook_path=f"{USUARIO_REPO}/E6_controles_gobierno/01_controles_unity_catalog",
             source=jobs.Source.WORKSPACE,
         ),
         timeout_seconds=1200,

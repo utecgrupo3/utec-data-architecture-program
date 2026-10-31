@@ -64,6 +64,8 @@ slv_business = (brz_bus
         F.col("business_id").isNotNull() &
         F.col("nombre").isNotNull() & (F.col("nombre") != "") &
         F.col("ciudad").isNotNull() & (F.col("ciudad") != "") &
+        F.col("latitud").between(-90.0, 90.0) &
+        F.col("longitud").between(-180.0, 180.0) &
         (F.col("estrellas").isNull() | F.col("estrellas").between(1.0, 5.0))
     )
     .dropDuplicates(["business_id"])
@@ -82,6 +84,13 @@ registrar_bitacora("silver", "workspace.yelp_silver.slv_business",
 # DBTITLE 1: 2. Entidades Silver — slv_user (Perfiles) y slv_amistad (Grafo Social v1.2)
 t0 = time.time()
 brz_usr = spark.table("workspace.yelp_bronze.brz_user")
+
+# Compatibilidad con E6: si slv_user ya tiene COLUMN MASK aplicada sobre `name`, se retira temporalmente
+# antes del overwriteSchema y se vuelve a aplicar al finalizar la conformación.
+try:
+    spark.sql("ALTER TABLE workspace.yelp_silver.slv_user ALTER COLUMN name DROP MASK")
+except Exception:
+    pass
 
 slv_user = (brz_usr
     .select(
@@ -121,7 +130,8 @@ slv_amistad = (brz_usr
         F.col("user_id_1").isNotNull() &
         F.col("user_id_2").isNotNull() &
         (F.col("user_id_2") != "") &
-        (F.lower(F.col("user_id_2")) != "none")
+        (F.lower(F.col("user_id_2")) != "none") &
+        (F.col("user_id_1") != F.col("user_id_2"))
     )
     .dropDuplicates(["user_id_1", "user_id_2"])
     .withColumn("fecha_carga", F.current_timestamp())
@@ -298,7 +308,48 @@ registrar_bitacora("silver", "workspace.yelp_silver.slv_checkin",
 
 # COMMAND ----------
 
-# DBTITLE 1: Gate de calidad — el pipeline falla si la calidad crítica no pasa
+# DBTITLE 1: 5. Reconciliación de Consistencia E5 (DQ-011 y DQ-012) y Preservación de Controles E6 (ADR-06)
+# 5.1 DQ-011 (Sección 6.2): Ajustar yelping_since a la marca temporal de la primera reseña histórica cuando exista desfase horario
+spark.sql("""
+MERGE INTO workspace.yelp_silver.slv_user AS u
+USING (
+  SELECT user_id, min(fecha_resena) AS min_fecha_resena
+  FROM workspace.yelp_silver.slv_review
+  GROUP BY user_id
+) AS r
+ON u.user_id = r.user_id AND u.yelping_since > r.min_fecha_resena
+WHEN MATCHED THEN UPDATE SET u.yelping_since = r.min_fecha_resena
+""")
+
+# 5.2 DQ-012 (Sección 6.2): Sincronizar el promedio de estrellas y conteo de reseñas de slv_business con las reseñas activas en slv_review
+spark.sql("""
+MERGE INTO workspace.yelp_silver.slv_business AS b
+USING (
+  SELECT business_id,
+         round(avg(CAST(stars AS DOUBLE)), 2) AS avg_stars_activo,
+         CAST(count(*) AS INT)                AS cnt_resenas_activo
+  FROM workspace.yelp_silver.slv_review
+  GROUP BY business_id
+) AS r
+ON b.business_id = r.business_id
+WHEN MATCHED THEN UPDATE SET
+  b.estrellas = r.avg_stars_activo,
+  b.n_resenas = r.cnt_resenas_activo
+""")
+
+# 5.3 Re-aplicar Column Mask de E6 (ADR-06) sobre slv_user.name si la función gobernada ya existe
+try:
+    spark.sql("""
+        ALTER TABLE workspace.yelp_silver.slv_user
+        ALTER COLUMN name SET MASK workspace.yelp_gov.mascara_nombre
+    """)
+    print("✔ Máscara dinámica E6 (workspace.yelp_gov.mascara_nombre) preservada en slv_user.name")
+except Exception:
+    pass
+
+# COMMAND ----------
+
+# DBTITLE 1: 6. Gate de calidad (E5) — el pipeline falla si la calidad crítica no pasa
 # Ejecuta el motor de E5 (01_reglas_calidad) y corta el pipeline si una regla de criticidad alta falla.
 resultado = dbutils.notebook.run("../E5_calidad_datos/01_reglas_calidad", 600)
 
@@ -319,4 +370,5 @@ print(f"✔ Gate de calidad superado ({resultado}): 0 fallas críticas en Silver
 # MAGIC - [x] Todas las entidades silver (`slv_business`, `slv_user`, `slv_amistad`, `slv_review`, `slv_review_cuarentena`, `slv_tip`, `slv_checkin`) pobladas conforme al DDL de E3.
 # MAGIC - [x] Deduplicación de reseñas (física por `review_id` y lógica por `user_id + business_id + texto`) con criterio documentado + tabla de cuarentena `slv_review_cuarentena` operativa.
 # MAGIC - [x] Check-ins explotados a grano evento (`split` + `explode`) y deduplicados por ventana horaria (**ADR-01**).
+# MAGIC - [x] Reconciliación de consistencia (`DQ-011` y `DQ-012`) y preservación de máscara PII (`E6`) aplicadas.
 # MAGIC - [x] Gate de calidad integrado invocando `../E5_calidad_datos/01_reglas_calidad` y deteniendo el flujo ante fallas críticas.
