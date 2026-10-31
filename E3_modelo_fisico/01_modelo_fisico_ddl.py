@@ -10,9 +10,9 @@
 # MAGIC 3. Constraints sí enforzadas donde aplique: `NOT NULL` y `CHECK`.
 # MAGIC 4. Habilitar `delta.enableChangeDataFeed = true` para auditoría histórica Time Travel (**ADR-04**).
 # MAGIC
-# MAGIC > **Trazabilidad —** este entregable **implementa** la **Sección 4 («Modelo de Datos Conceptual y Lógico»)** y las decisiones **ADR-01 a ADR-06** del
+# MAGIC > **Trazabilidad —** este entregable **implementa** la **Sección 4 («Modelo de Datos Conceptual y Lógico»)** y las decisiones **ADR-01 a ADR-07** del
 # MAGIC > **Documento Formal de Arquitectura de Datos (v1.2 · Equipo Data Evolution)**:
-# MAGIC > - **Capa Silver (`workspace.yelp_silver`):** 7 tablas (`slv_business`, `slv_user`, `slv_amistad`, `slv_review`, `slv_review_cuarentena`, `slv_tip`, `slv_checkin`).
+# MAGIC > - **Capa Silver (`workspace.yelp_silver`):** 7 tablas (`slv_business`, `slv_user`, `slv_amistad`, `slv_review`, `slv_review_cuarentena`, `slv_tip`, `slv_checkin`). En `slv_business`, los objetos anidados dispersos `attributes` (39 subcampos con >65% de nulidad y literales Python 2) y `hours` se retienen en `brz_business` (*Schema-on-Read*) y no se promueven a Silver conforme a **ADR-07 / Acta 05**.
 # MAGIC > - **Capa Gold (`workspace.yelp_gold`):** Esquema estrella Kimball (`gld_dim_negocio`, `gld_dim_usuario`, `gld_dim_tiempo`, `gld_fact_resenas`) + productos agregados (`gld_kpi_negocio_mensual`, `gld_checkins_diarios`, `gld_salud_resenas`, `gld_cohortes_retencion_mensual`).
 
 # COMMAND ----------

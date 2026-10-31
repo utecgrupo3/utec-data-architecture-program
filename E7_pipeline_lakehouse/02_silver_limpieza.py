@@ -7,7 +7,7 @@
 # MAGIC Las transformaciones resuelven directamente los dolores de negocio del caso:
 # MAGIC 1. **Deduplicación de reseñas y aislamiento en cuarentena (Marketing ↔ Trust & Safety — Acta 02):** deduplicación física (`review_id`) y lógica (`user_id + business_id + fecha/texto`), enviando registros huérfanos o inválidos a `slv_review_cuarentena` con `motivo_rechazo`.
 # MAGIC 2. **Normalización y deduplicación horaria de check-ins (Operaciones Comerciales ↔ Producto — ADR-01):** explosión del string de fechas a grano evento individual y deduplicación por ventana de 60 minutos.
-# MAGIC 3. **Categorías como `ARRAY<STRING>` (ADR-03)** y **Grafo Social `slv_amistad` (v1.2 Hackolade)**.
+# MAGIC 3. **Categorías como `ARRAY<STRING>` (ADR-03)**, **retención de `business.attributes` y `hours` en Bronze bajo *Schema-on-Read* (ADR-07 / Acta 05)** y **Grafo Social `slv_amistad` (v1.2 Hackolade)**.
 # MAGIC
 # MAGIC > **Trazabilidad —** implementa la **Sección 4.2 («Modelo Lógico y Decisiones de Normalización»)** y la **Sección 6 («Reglas de Calidad como Quality Gate»)** del **Documento Formal de Arquitectura de Datos (v1.2)**.
 
