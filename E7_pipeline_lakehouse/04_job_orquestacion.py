@@ -47,7 +47,7 @@ tareas_dag = [
     ),
     jobs.Task(
         task_key="02_silver_limpieza",
-        description="Conformación 3FN, deduplicación, cuarentena y ejecución del Quality Gate E5 (01_reglas_calidad)",
+        description="DDL de E3, normalización Silver, golden record, cuarentena y Quality Gate E5 (01_reglas_calidad)",
         depends_on=[jobs.TaskDependency(task_key="01_bronze_ingesta")],
         run_if=jobs.RunIf.ALL_SUCCESS,
         notebook_task=jobs.NotebookTask(
@@ -120,22 +120,22 @@ else:
 
 # DBTITLE 1,2. Monitoreo — Bitácora de corridas del pipeline (poblada por los notebooks 01-03)
 # MAGIC %sql
-# MAGIC CREATE TABLE IF NOT EXISTS workspace.yelp_gov.pipeline_bitacora (
-# MAGIC   ejecucion_ts     TIMESTAMP COMMENT 'Fecha y hora exacta del registro de métrica',
-# MAGIC   capa             STRING    COMMENT 'Capa medallón ejecutada (bronze, silver, gold)',
-# MAGIC   tabla            STRING    COMMENT 'Nombre calificado de la tabla procesada',
-# MAGIC   filas            BIGINT    COMMENT 'Volumetría total de filas resultantes en la tabla',
-# MAGIC   duracion_seg     DOUBLE    COMMENT 'Duración en segundos de la etapa de procesamiento'
+# MAGIC CREATE TABLE IF NOT EXISTS workspace.yelp_gov.pipeline_run_log (
+# MAGIC   executed_at      TIMESTAMP COMMENT 'Fecha y hora exacta del registro de métrica',
+# MAGIC   layer            STRING    COMMENT 'Capa medallón ejecutada (bronze, silver, gold)',
+# MAGIC   table_name       STRING    COMMENT 'Nombre calificado de la tabla procesada',
+# MAGIC   row_count        BIGINT    COMMENT 'Volumetría total de filas resultantes en la tabla',
+# MAGIC   duration_sec     DOUBLE    COMMENT 'Duración en segundos de la etapa de procesamiento'
 # MAGIC ) COMMENT 'Observabilidad del pipeline: volumetría y duración por corrida (instrumentada en notebooks 01-03)';
 # MAGIC
 # MAGIC SELECT
-# MAGIC   ejecucion_ts,
-# MAGIC   capa,
-# MAGIC   tabla,
-# MAGIC   filas,
-# MAGIC   duracion_seg
-# MAGIC FROM workspace.yelp_gov.pipeline_bitacora
-# MAGIC ORDER BY ejecucion_ts DESC
+# MAGIC   executed_at,
+# MAGIC   layer,
+# MAGIC   table_name,
+# MAGIC   row_count,
+# MAGIC   duration_sec
+# MAGIC FROM workspace.yelp_gov.pipeline_run_log
+# MAGIC ORDER BY executed_at DESC
 # MAGIC LIMIT 30;
 
 # COMMAND ----------
@@ -143,15 +143,15 @@ else:
 # DBTITLE 1,2.1 Resumen ejecutivo de tiempos y volumetría por capa
 # MAGIC %sql
 # MAGIC SELECT
-# MAGIC   capa,
-# MAGIC   count(DISTINCT tabla)       AS tablas_instrumentadas,
+# MAGIC   layer,
+# MAGIC   count(DISTINCT table_name)       AS tablas_instrumentadas,
 # MAGIC   count(*)                    AS registros_bitacora,
-# MAGIC   sum(filas)                  AS total_filas_acumuladas,
-# MAGIC   round(avg(duracion_seg), 2) AS duracion_promedio_seg,
-# MAGIC   round(sum(duracion_seg), 2) AS tiempo_total_seg
-# MAGIC FROM workspace.yelp_gov.pipeline_bitacora
-# MAGIC GROUP BY capa
-# MAGIC ORDER BY CASE capa WHEN 'bronze' THEN 1 WHEN 'silver' THEN 2 WHEN 'gold' THEN 3 ELSE 4 END;
+# MAGIC   sum(row_count)              AS total_filas_acumuladas,
+# MAGIC   round(avg(duration_sec), 2) AS duracion_promedio_seg,
+# MAGIC   round(sum(duration_sec), 2) AS tiempo_total_seg
+# MAGIC FROM workspace.yelp_gov.pipeline_run_log
+# MAGIC GROUP BY layer
+# MAGIC ORDER BY CASE layer WHEN 'bronze' THEN 1 WHEN 'silver' THEN 2 WHEN 'gold' THEN 3 ELSE 4 END;
 
 # COMMAND ----------
 
@@ -165,8 +165,8 @@ else:
 # MAGIC | :--- | :--- | :--- | :--- |
 # MAGIC | **1** | **Muestreo Territorial Consciente de Integridad (`preparar_muestra_yelp.py`)** | Procesar los ~10 GB crudos de todo el Yelp Open Dataset consumía cerca del **90% de la cuota diaria** de Databricks Free Edition en una sola corrida. | Reducción del tamaño crudo a **< 300 MB** (una ciudad representativa con integridad referencial completa `business → review/tip/checkin → user`), bajando el consumo por corrida a **< 22% de la cuota diaria**. |
 # MAGIC | **2** | **Ingesta Incremental con `Auto Loader` + `trigger(availableNow=True)` en `brz_review`** | Un stream continuo (`processingTime`) mantendría el cómputo Serverless encendido indefinidamente; un `overwrite` batch re-leería cientos de miles de reseñas cada día. | `availableNow=True` procesa únicamente los archivos `.json.gz` nuevos registrados desde el último checkpoint y apaga el stream de inmediato (**ahorro del >65% en DBUs de ingesta**). |
-# MAGIC | **3** | **Categorías como `ARRAY<STRING>` Nativo en lugar de Tabla Puente (**ADR-03**)** | Normalizar las categorías en una tabla puente N:M (`slv_negocio_categoria`) multiplicaba por ~4.5x las filas y forzaba costosos *shuffle joins* distribuidos. | Reducción del **40% en tiempo de ejecución de Silver y Gold** al utilizar tipos complejos nativos de Delta Lake y `element_at(categorias, 1)`. |
-# MAGIC | **4** | **Eliminación de Acciones *Eager* Redundantes (`display()` / `count()` en loops)** | Llamar a `display()` exploratorios y múltiples `.count()` forzaba a Spark a re-evaluar el grafo de transformaciones varias veces por tabla. | Consolidación de conteos en el registro único de `pipeline_bitacora` y evaluación *pushdown* en `01_reglas_calidad`, manteniendo la corrida completa en **~6.4 minutos**. |
+# MAGIC | **3** | **DDL centralizado en E3 y carga con `insertInto`** | Recrear las tablas en cada corrida (`overwriteSchema`) borraba `COMMENT`, constraints y tags, y obligaba a repetir el DDL en cada notebook. | Las tablas se crean una sola vez en `E3_modelo_fisico/01_modelo_fisico_ddl`; Silver y Gold solo reemplazan datos, conservando metadata y constraints sin trabajo extra en cada corrida. |
+# MAGIC | **4** | **Eliminación de Acciones *Eager* Redundantes (`display()` / `count()` en loops)** | Llamar a `display()` exploratorios y múltiples `.count()` forzaba a Spark a re-evaluar el grafo de transformaciones varias veces por tabla. | Consolidación de conteos en el registro único de `pipeline_run_log` y evaluación *pushdown* en `01_reglas_calidad`, manteniendo la corrida completa en **~6.4 minutos**. |
 # MAGIC
 # MAGIC ---
 # MAGIC ### 3.2. Estimación de Costo Mensual en un Workspace Enterprise Pagado
@@ -193,6 +193,6 @@ else:
 # MAGIC ---
 # MAGIC ### Definition of Done (E7.4)
 # MAGIC - [x] Job multi-tarea (`Pipeline_Medallon_YelpConnect_Grupo03`) configurado con 3 tareas, dependencias `ALL_SUCCESS`, timeouts y alertas a `grupo3arqdatos@proton.me`.
-# MAGIC - [x] Gate de calidad integrado en `02_silver_limpieza` que detiene la corrida hacia `03_gold_productos_datos` si falla alguna regla de criticidad `alta`.
-# MAGIC - [x] Tabla `workspace.yelp_gov.pipeline_bitacora` instrumentada automáticamente en los notebooks `01`, `02` y `03`.
+# MAGIC - [x] Gate de calidad integrado en `02_silver_limpieza` que detiene la corrida hacia `03_gold_productos_datos` si falla alguna regla de criticidad `critical`.
+# MAGIC - [x] Tabla `workspace.yelp_gov.pipeline_run_log` instrumentada automáticamente en los notebooks `01`, `02` y `03`.
 # MAGIC - [x] Análisis FinOps con 4 decisiones de eficiencia documentadas y estimación matemática de costo mensual en DBU Serverless.

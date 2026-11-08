@@ -10,8 +10,8 @@
 # MAGIC
 # MAGIC **Flujo del entregable:**
 # MAGIC 1. El grupo negocia y redacta los términos en el **Excel institucional** (interfaz de negocio).
-# MAGIC 2. Sube (o sincroniza desde `plantillas/`) el Excel al Volume `/Volumes/workspace/yelp_gov/artefactos/`.
-# MAGIC 3. Este notebook lo carga a `yelp_gov.glosario_negocio` (fuente consultable).
+# MAGIC 2. Sube (o sincroniza desde `plantillas/`) el Excel al Volume `/Volumes/workspace/yelp_gov/artifacts/`.
+# MAGIC 3. Este notebook lo carga a `yelp_gov.business_glossary` (fuente consultable).
 # MAGIC 4. Los validadores comprueban el Definition of Done.
 # MAGIC
 # MAGIC > La tabla Delta tiene **exactamente las 12 columnas de la plantilla**: el Excel no se
@@ -32,9 +32,9 @@ import os
 import shutil
 
 spark.sql("CREATE SCHEMA IF NOT EXISTS workspace.yelp_gov")
-spark.sql("CREATE VOLUME IF NOT EXISTS workspace.yelp_gov.artefactos")
+spark.sql("CREATE VOLUME IF NOT EXISTS workspace.yelp_gov.artifacts")
 
-RUTA = "/Volumes/workspace/yelp_gov/artefactos/Glosario_de_terminos_de_negocio_YelpConnect.xlsx"
+RUTA = "/Volumes/workspace/yelp_gov/artifacts/Glosario_de_terminos_de_negocio_YelpConnect.xlsx"
 RUTA_PLANTILLA_LOCAL = os.path.join(
     os.getcwd(), "plantillas", "Glosario_de_terminos_de_negocio_YelpConnect_PLANTILLA.xlsx"
 )
@@ -43,7 +43,7 @@ if os.path.exists(RUTA_PLANTILLA_LOCAL):
     shutil.copy2(RUTA_PLANTILLA_LOCAL, RUTA)
     shutil.copy2(
         RUTA_PLANTILLA_LOCAL,
-        "/Volumes/workspace/yelp_gov/artefactos/Glosario_de_terminos_de_negocio_YelpConnect_PLANTILLA.xlsx",
+        "/Volumes/workspace/yelp_gov/artifacts/Glosario_de_terminos_de_negocio_YelpConnect_PLANTILLA.xlsx",
     )
     print(f"✔ Plantilla sincronizada automáticamente al Volume: {RUTA}")
 else:
@@ -54,34 +54,52 @@ else:
 # DBTITLE 1,Carga del Excel institucional → tabla Delta
 import pandas as pd
 
-COLUMNAS = ["termino", "sinonimos", "definicion_negocio", "definicion_tecnica",
-            "contexto_uso", "dominio_datos", "categoria", "ejemplo_uso",
-            "relaciones", "propietario", "fuente_normativa", "fecha_actualizacion"]
+COLUMNAS = ["term", "synonyms", "business_definition", "technical_definition",
+            "usage_context", "data_domain", "category", "usage_example",
+            "related_terms", "term_owner", "regulatory_source", "updated_at"]
 
 # La plantilla trae 3 filas de cabecera institucional + 1 de identificación del caso;
 # los encabezados de tabla están en la fila 5 y los datos comienzan en la fila 6.
 pdf = pd.read_excel(RUTA, sheet_name="Glosario", skiprows=4)
 pdf = pdf.dropna(how="all").iloc[:, :12]
 pdf.columns = COLUMNAS
-pdf["fecha_actualizacion"] = pd.to_datetime(pdf["fecha_actualizacion"]).dt.date
+pdf["updated_at"] = pd.to_datetime(pdf["updated_at"]).dt.date
 
 (spark.createDataFrame(pdf)
       .write.mode("overwrite").option("overwriteSchema", "true")
-      .saveAsTable("workspace.yelp_gov.glosario_negocio"))
+      .saveAsTable("workspace.yelp_gov.business_glossary"))
+spark.sql("COMMENT ON TABLE workspace.yelp_gov.business_glossary IS "
+          "'E4 · Glosario de términos de negocio cargado desde la plantilla institucional. Una fila por término.'")
+COMENTARIOS = {
+    "term": "Nombre del término: nombre oficial aprobado del concepto",
+    "synonyms": "Sinónimos o alias con que también se conoce el término",
+    "business_definition": "Definición de negocio, comprensible sin tecnicismos",
+    "technical_definition": "Definición técnica: cómo se representa en la plataforma",
+    "usage_context": "Áreas, procesos o dominios donde se usa el término",
+    "data_domain": "Dominio de datos al que pertenece el término",
+    "category": "Categoría: entidad, atributo, rol, proceso, medida, indicador o concepto",
+    "usage_example": "Frase que ilustra el término aplicado al caso",
+    "related_terms": "Relaciones con otros términos del glosario",
+    "term_owner": "Data Owner responsable de la definición",
+    "regulatory_source": "Ley, norma o política interna que respalda la definición",
+    "updated_at": "Fecha de creación o última actualización del término",
+}
+for col, txt in COMENTARIOS.items():
+    spark.sql(f"ALTER TABLE workspace.yelp_gov.business_glossary ALTER COLUMN `{col}` COMMENT '{txt}'")
 
-display(spark.table("workspace.yelp_gov.glosario_negocio"))
+display(spark.table("workspace.yelp_gov.business_glossary"))
 
 # COMMAND ----------
 
 # DBTITLE 1,Validadores del Definition of Done (no modificar)
 from pyspark.sql import functions as F
 
-g = spark.table("workspace.yelp_gov.glosario_negocio")
+g = spark.table("workspace.yelp_gov.business_glossary")
 n = g.count()
-sin_owner = g.filter(F.col("propietario").isNull() | F.col("propietario").contains("✏️")).count()
-sin_dominio = g.select("dominio_datos").distinct().count()
-con_relaciones = g.filter(F.col("relaciones").isNotNull()).count()
-duplicados = n - g.select("termino").distinct().count()
+sin_owner = g.filter(F.col("term_owner").isNull() | F.col("term_owner").contains("✏️")).count()
+sin_dominio = g.select("data_domain").distinct().count()
+con_relaciones = g.filter(F.col("related_terms").isNotNull()).count()
+duplicados = n - g.select("term").distinct().count()
 
 assert n >= 20, f"❌ Solo hay {n} términos; el DoD exige ≥20"
 assert sin_owner == 0, "❌ Hay términos sin propietario asignado"
@@ -96,12 +114,12 @@ print(f"✔ Glosario válido: {n} términos · {sin_dominio} dominios · "
 # DBTITLE 1,Conflictos semánticos del caso — verificación explícita
 # MAGIC %sql
 # MAGIC -- Los tres conflictos del enunciado deben estar resueltos con un término propio
-# MAGIC SELECT termino, dominio_datos, propietario
-# MAGIC FROM workspace.yelp_gov.glosario_negocio
-# MAGIC WHERE lower(termino) LIKE '%verificada%'      -- Marketing ↔ Trust & Safety
-# MAGIC    OR lower(termino) LIKE '%check-in válido%' -- Operaciones Comerciales
-# MAGIC    OR lower(termino) LIKE '%duplicada%'       -- Marketing
-# MAGIC ORDER BY termino;
+# MAGIC SELECT term, data_domain, term_owner
+# MAGIC FROM workspace.yelp_gov.business_glossary
+# MAGIC WHERE lower(term) LIKE '%verificada%'      -- Marketing ↔ Trust & Safety
+# MAGIC    OR lower(term) LIKE '%check-in válido%' -- Operaciones Comerciales
+# MAGIC    OR lower(term) LIKE '%duplicada%'       -- Marketing
+# MAGIC ORDER BY term;
 
 # COMMAND ----------
 
@@ -114,7 +132,7 @@ print(f"✔ Glosario válido: {n} términos · {sin_dominio} dominios · "
 # MAGIC | :--- | :--- | :--- | :--- | :--- |
 # MAGIC | **Acta 01** | 19/08/2026 | **Conteo de Check-ins (`Check-in` vs `Check-in Válido`):** Operaciones Comerciales (Yelp Ads) contabilizaba cada marca temporal cruda para facturación, mientras Producto exigía máximo un check-in diario para medir retención real (brecha del 28%). | Se formalizó el término **`Check-in Válido`** deduplicado por ventana móvil de **60 minutos** por establecimiento (**ADR-01**). Elimina rebotes técnicos sin perder visitas reales en distintos momentos del día, alimentando el **Índice de Afluencia Homologada (HAI)**. | **Carla Romero** (Op. Comerciales) y **Andrew Collins** (VP of Product) |
 # MAGIC | **Acta 02** | 02/09/2026 | **Validez y Duplicidad de Reseñas (`Reseña Verificada`, `Reseña Duplicada`, `Reseña en Cuarentena`):** Marketing & Growth incluía reseñas repetidas de campañas masivas; Trust & Safety solicitaba eliminar físicamente cualquier registro sospechoso. | Se separaron tres conceptos: **`Reseña Verificada`** (aprueba el 100% de reglas DQ críticas y alimenta el rating público), **`Reseña Duplicada`** (reiteración del mismo usuario/comercio en <24h o `review_id` repetido) y **`Reseña en Cuarentena`** (aislada preventivamente para auditoría forense sin distorsionar Gold). | **Rafael Nakamura** (Trust & Safety) y **Andrew Collins** (VP of Product) |
-# MAGIC | **Acta 03** | 16/09/2026 | **Taxonomía de `Categoría Comercial` y `Rating Promedio Ponderado Bayesiano (BWR)`:** Comercios con una sola reseña de 5 estrellas superaban en el buscador a negocios consolidados con cientos de opiniones. | Se aprobó el término **`Rating Promedio Ponderado Bayesiano (BWR)`** con umbral de credibilidad $m=25$ reseñas y media global $C$ de la ciudad (**ADR-02**), junto con la representación de **`Categoría Comercial`** como arreglo nativo (**ADR-03**). | **Andrew Collins** (VP of Product) y **Laura Hernández** (CDO) |
+# MAGIC | **Acta 03** | 16/09/2026 | **Taxonomía de `Categoría Comercial` y `Rating Promedio Ponderado Bayesiano (BWR)`:** Comercios con una sola reseña de 5 estrellas superaban en el buscador a negocios consolidados con cientos de opiniones. | Se aprobó el término **`Rating Promedio Ponderado Bayesiano (BWR)`** con umbral de credibilidad $m=25$ reseñas y media global $C$ de la ciudad (**ADR-02**), junto con la representación de **`Categoría Comercial`** como catálogo normalizado (tabla puente negocio-categoría) con una sola **categoría principal** por negocio. | **Andrew Collins** (VP of Product) y **Laura Hernández** (CDO) |
 # MAGIC | **Acta 04** | 30/09/2026 | **Métricas de Comunidad (`Cohorte de Usuario`, `Usuario Activo`, `Tasa de Retención de Cohortes (CRR)`):** Ausencia de criterio uniforme para medir la permanencia de usuarios tras el alta (`yelping_since`). | Se estandarizó **`Cohorte de Usuario`** por mes calendario de alta y **`Usuario Activo`** como aquel con al menos una interacción validada en el periodo, habilitando el seguimiento de **CRR** y **Stickiness (DAU/MAU)** (**ADR-05**). | **Andrew Collins** (VP of Product) y **Rafael Nakamura** (Trust & Safety) |
 # MAGIC
 # MAGIC ---

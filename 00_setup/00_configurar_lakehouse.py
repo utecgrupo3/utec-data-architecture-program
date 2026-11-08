@@ -42,86 +42,86 @@ print("Volume listo → /Volumes/workspace/yelp_bronze/raw/")
 
 # DBTITLE 1,Tablas de control de gobierno (se llenan en E4, E5 y E6)
 spark.sql(f"""
-CREATE TABLE IF NOT EXISTS {CATALOGO}.yelp_gov.glosario_negocio (
-  termino               STRING COMMENT 'Nombre del Término — nombre oficial aprobado del concepto',
-  sinonimos             STRING COMMENT 'Sinónimos / Alias — otras formas en que el término se conoce',
-  definicion_negocio    STRING COMMENT 'Definición de Negocio — explicación comprensible sin tecnicismos',
-  definicion_tecnica    STRING COMMENT 'Definición Técnica (opcional) — cómo se representa en la plataforma',
-  contexto_uso          STRING COMMENT 'Contexto / Uso — áreas, procesos o dominios donde se utiliza',
-  dominio_datos         STRING COMMENT 'Dominio de Datos — Negocio, Usuario, Contenido, Interacción, Publicidad, Confianza y Seguridad, Gobierno',
-  categoria             STRING COMMENT 'Categoría — Entidad, Atributo, Rol, Proceso, Medida, Indicador o Concepto',
-  ejemplo_uso           STRING COMMENT 'Ejemplo de Uso — frase que ilustra el término aplicado al caso',
-  relaciones            STRING COMMENT 'Relaciones con otros términos — trazabilidad semántica',
-  propietario           STRING COMMENT 'Propietario del Término — Data Owner del caso responsable de la definición',
-  fuente_normativa      STRING COMMENT 'Fuente Normativa / Regulatoria — ley, norma o política interna que la soporta',
-  fecha_actualizacion   DATE   COMMENT 'Fecha de Creación / Última Actualización'
+CREATE TABLE IF NOT EXISTS {CATALOGO}.yelp_gov.business_glossary (
+  term                  STRING COMMENT 'Nombre del Término — nombre oficial aprobado del concepto',
+  synonyms              STRING COMMENT 'Sinónimos / Alias — otras formas en que el término se conoce',
+  business_definition   STRING COMMENT 'Definición de Negocio — explicación comprensible sin tecnicismos',
+  technical_definition  STRING COMMENT 'Definición Técnica (opcional) — cómo se representa en la plataforma',
+  usage_context         STRING COMMENT 'Contexto / Uso — áreas, procesos o dominios donde se utiliza',
+  data_domain           STRING COMMENT 'Dominio de Datos — Negocio, Usuario, Contenido, Interacción, Publicidad, Confianza y Seguridad, Gobierno',
+  category              STRING COMMENT 'Categoría — Entidad, Atributo, Rol, Proceso, Medida, Indicador o Concepto',
+  usage_example         STRING COMMENT 'Ejemplo de Uso — frase que ilustra el término aplicado al caso',
+  related_terms         STRING COMMENT 'Relaciones con otros términos — trazabilidad semántica',
+  term_owner            STRING COMMENT 'Propietario del Término — Data Owner del caso responsable de la definición',
+  regulatory_source     STRING COMMENT 'Fuente Normativa / Regulatoria — ley, norma o política interna que la soporta',
+  updated_at            DATE   COMMENT 'Fecha de Creación / Última Actualización'
 ) COMMENT 'E4 · Glosario de términos de negocio — mismo esquema que la plantilla institucional del bloque de Gobierno'
 """)
 
 spark.sql(f"""
-CREATE TABLE IF NOT EXISTS {CATALOGO}.yelp_gov.diccionario_datos (
-  elemento                 STRING COMMENT 'Nombre del Elemento de Datos — nombre técnico del campo',
-  nombre_negocio           STRING COMMENT 'Nombre de Negocio — nombre usado en el glosario',
-  descripcion_negocio      STRING COMMENT 'Descripción de Negocio — significado del dato',
-  dominio                  STRING COMMENT 'Dominio / Tema de Datos',
-  sistema_fuente           STRING COMMENT 'Sistema / Aplicación Fuente donde se origina el dato',
-  nombre_fisico            STRING COMMENT 'Nombre Físico — nombre calificado en Unity Catalog (catalogo.schema.tabla.columna)',
-  tipo_dato                STRING COMMENT 'Tipo de Dato según el motor (STRING, INT, DOUBLE, TIMESTAMP...)',
-  formato                  STRING COMMENT 'Formato / Patrón esperado',
-  longitud                 STRING COMMENT 'Longitud / Precisión',
-  valores_permitidos       STRING COMMENT 'Valores Permitidos / Dominio de Valores',
-  unidad_medida            STRING COMMENT 'Unidad de Medida (si aplica)',
-  valor_defecto            STRING COMMENT 'Valor por Defecto',
-  obligatorio              STRING COMMENT 'Obligatorio / Nulo',
-  clave                    STRING COMMENT 'Clave Primaria / Foránea',
-  reglas_calidad           STRING COMMENT 'Reglas de Calidad / Validación — debe citar el identificador DQ-nnn de yelp_gov.dq_reglas',
-  reglas_transformacion    STRING COMMENT 'Reglas de Transformación / Cálculo (si aplica)',
-  frecuencia_actualizacion STRING COMMENT 'Frecuencia de Actualización',
-  origen_dato              STRING COMMENT 'Origen del Dato — cómo y desde dónde se genera',
-  uso_procesos             STRING COMMENT 'Uso / Procesos Relacionados',
-  relacion_elementos       STRING COMMENT 'Relación con otros elementos',
-  responsable              STRING COMMENT 'Responsable / Data Owner',
-  politica_retencion       STRING COMMENT 'Política de Retención',
-  sensibilidad             STRING COMMENT 'Sensibilidad / Clasificación — Público, Interno, Confidencial o Restringido',
-  fuente_normativa         STRING COMMENT 'Fuente Normativa / Regulatoria',
-  fecha_actualizacion      DATE   COMMENT 'Fecha de Creación / Última Actualización'
+CREATE TABLE IF NOT EXISTS {CATALOGO}.yelp_gov.data_dictionary (
+  element                  STRING COMMENT 'Nombre del Elemento de Datos — nombre técnico del campo',
+  business_name            STRING COMMENT 'Nombre de Negocio — nombre usado en el glosario',
+  business_description     STRING COMMENT 'Descripción de Negocio — significado del dato',
+  domain                   STRING COMMENT 'Dominio / Tema de Datos',
+  source_system            STRING COMMENT 'Sistema / Aplicación Fuente donde se origina el dato',
+  physical_name            STRING COMMENT 'Nombre Físico — nombre calificado en Unity Catalog (catalogo.schema.tabla.columna)',
+  data_type                STRING COMMENT 'Tipo de Dato según el motor (STRING, INT, DOUBLE, TIMESTAMP...)',
+  format                   STRING COMMENT 'Formato / Patrón esperado',
+  length                   STRING COMMENT 'Longitud / Precisión',
+  allowed_values           STRING COMMENT 'Valores Permitidos / Dominio de Valores',
+  unit_of_measure          STRING COMMENT 'Unidad de Medida (si aplica)',
+  default_value            STRING COMMENT 'Valor por Defecto',
+  nullability              STRING COMMENT 'Obligatorio / Nulo',
+  key_type                 STRING COMMENT 'Clave Primaria / Foránea',
+  quality_rules            STRING COMMENT 'Reglas de Calidad / Validación — debe citar el identificador DQ-nnn de yelp_gov.dq_rules',
+  transformation_rules     STRING COMMENT 'Reglas de Transformación / Cálculo (si aplica)',
+  update_frequency         STRING COMMENT 'Frecuencia de Actualización',
+  data_origin              STRING COMMENT 'Origen del Dato — cómo y desde dónde se genera',
+  process_usage            STRING COMMENT 'Uso / Procesos Relacionados',
+  related_elements         STRING COMMENT 'Relación con otros elementos',
+  data_owner               STRING COMMENT 'Responsable / Data Owner',
+  retention_policy         STRING COMMENT 'Política de Retención',
+  sensitivity              STRING COMMENT 'Sensibilidad / Clasificación — Público, Interno, Confidencial o Restringido',
+  regulatory_source        STRING COMMENT 'Fuente Normativa / Regulatoria',
+  updated_at               DATE   COMMENT 'Fecha de Creación / Última Actualización'
 ) COMMENT 'E4 · Diccionario de datos — mismo esquema que la plantilla institucional del bloque de Gobierno'
 """)
 
 spark.sql(f"""
-CREATE TABLE IF NOT EXISTS {CATALOGO}.yelp_gov.dq_reglas (
-  regla_id         STRING  COMMENT 'Identificador único (DQ-001, DQ-002...)',
-  tabla_objetivo   STRING  COMMENT 'Tabla completa: workspace.yelp_silver.slv_business',
-  columna          STRING  COMMENT 'Columna evaluada (o * si es a nivel tabla)',
-  dimension        STRING  COMMENT 'Dimensión DQ: completitud|unicidad|validez|consistencia|actualidad|integridad',
-  descripcion      STRING  COMMENT 'Regla en lenguaje de negocio',
-  expresion_sql    STRING  COMMENT 'Predicado SQL que DEBE cumplirse (ej. stars BETWEEN 1 AND 5)',
-  criticidad       STRING  COMMENT 'alta|media|baja',
-  umbral_pct       DOUBLE  COMMENT 'Porcentaje mínimo de filas que deben cumplir la regla (0-100)'
+CREATE TABLE IF NOT EXISTS {CATALOGO}.yelp_gov.dq_rules (
+  rule_id          STRING  COMMENT 'Identificador único (DQ-001 a DQ-015)',
+  target_table     STRING  COMMENT 'Tabla completa: workspace.yelp_silver.slv_business',
+  column_name      STRING  COMMENT 'Columna evaluada (o * si es a nivel tabla)',
+  dimension        STRING  COMMENT 'Dimensión DQ: validity|uniqueness|completeness|consistency|accuracy|timeliness',
+  description      STRING  COMMENT 'Regla en lenguaje de negocio',
+  sql_expression   STRING  COMMENT 'Predicado SQL que DEBE cumplirse (ej. stars BETWEEN 1 AND 5)',
+  criticality      STRING  COMMENT 'critical|high|medium',
+  threshold_pct    DOUBLE  COMMENT 'Porcentaje mínimo de filas que deben cumplir la regla (0-100)'
 ) COMMENT 'E5 · Catálogo de reglas de calidad de datos'
 """)
 
 spark.sql(f"""
-CREATE TABLE IF NOT EXISTS {CATALOGO}.yelp_gov.dq_resultados (
-  ejecucion_ts     TIMESTAMP,
-  regla_id         STRING,
-  tabla_objetivo   STRING,
-  filas_totales    BIGINT,
-  filas_ok         BIGINT,
-  pct_cumplimiento DOUBLE,
-  paso             BOOLEAN COMMENT 'TRUE si pct_cumplimiento >= umbral de la regla'
+CREATE TABLE IF NOT EXISTS {CATALOGO}.yelp_gov.dq_results (
+  executed_at      TIMESTAMP COMMENT 'Momento de la corrida del motor DQ',
+  rule_id          STRING    COMMENT 'Regla evaluada (dq_rules.rule_id)',
+  target_table     STRING    COMMENT 'Tabla evaluada',
+  total_rows       BIGINT    COMMENT 'Filas evaluadas',
+  passed_rows      BIGINT    COMMENT 'Filas que cumplen la regla',
+  compliance_pct   DOUBLE    COMMENT 'Porcentaje de cumplimiento (0-100)',
+  passed           BOOLEAN   COMMENT 'TRUE si compliance_pct >= threshold_pct de la regla'
 ) COMMENT 'E5 · Historial de ejecuciones del motor de calidad'
 """)
 
 spark.sql(f"""
-CREATE TABLE IF NOT EXISTS {CATALOGO}.yelp_gov.matriz_raci (
-  entidad          STRING  COMMENT 'Entidad de datos (business, review, user...)',
-  dominio          STRING,
+CREATE TABLE IF NOT EXISTS {CATALOGO}.yelp_gov.raci_matrix (
+  entity           STRING  COMMENT 'Entidad de datos (business, review, user...)',
+  domain           STRING  COMMENT 'Dominio de datos',
   data_owner       STRING  COMMENT 'Área/rol accountable del caso Yelp',
-  data_steward     STRING,
-  data_custodian   STRING,
-  consumidores     STRING  COMMENT 'Áreas que consumen la entidad',
-  clasificacion    STRING  COMMENT 'publica|interna|confidencial|pii'
+  data_steward     STRING  COMMENT 'Steward funcional',
+  data_custodian   STRING  COMMENT 'Custodio técnico',
+  consumers        STRING  COMMENT 'Áreas que consumen la entidad',
+  classification   STRING  COMMENT 'public|internal|confidential|pii'
 ) COMMENT 'E6 · Asignación de roles y responsabilidades sobre entidades'
 """)
 print("Tablas de control creadas ✔")

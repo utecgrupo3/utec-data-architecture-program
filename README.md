@@ -162,3 +162,19 @@ Para que un entorno limpio se despliegue de principio a fin sin errores de depen
    ↓
 [Paso 14] EX_bonus_ia/01_analisis_ia_resenas.py            (Bonus: Análisis de sentimiento y extracción con IA)
 ```
+
+## 7. Job automatizado y estado actual
+
+El job **`Pipeline_Medallon_YelpConnect_Grupo03`** (Lakeflow Jobs, diario a las 01:00 UTC) ejecuta cuatro tareas en cadena:
+
+| Tarea | Notebook | Incluye |
+| :--- | :--- | :--- |
+| `01_bronze_ingesta` | `E7_pipeline_lakehouse/01_bronze_ingesta` | Bronze |
+| `02_silver_limpieza` | `E7_pipeline_lakehouse/02_silver_limpieza` | E3 (`%run`), Silver y Quality Gate E5 (`%run`) |
+| `03_gold_productos_datos` | `E7_pipeline_lakehouse/03_gold_productos_datos` | Gold |
+| `04_controles_gobierno` | `E6_controles_gobierno/01_controles_unity_catalog` | RACI, tags, permisos, máscaras PII y vista segura |
+
+E4 (glosario y diccionario), E8 (consultas del dashboard) y EX (IA) se ejecutan aparte, después del job.
+
+La especificación de diagramas del modelo lógico Silver y del modelo dimensional Gold está en
+[`documentos/03_modelo_logico_y_dimensional_gold.md`](documentos/03_modelo_logico_y_dimensional_gold.md).
