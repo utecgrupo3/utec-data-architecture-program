@@ -19,7 +19,7 @@
 
 # COMMAND ----------
 
-# DBTITLE 1: Catálogo de reglas (20 reglas · 6 dimensiones · 7 tablas silver)
+# DBTITLE 1,Catálogo de reglas (20 reglas · 6 dimensiones · 7 tablas silver)
 from pyspark.sql import Row
 
 reglas = [
@@ -192,11 +192,27 @@ reglas = [
         rule_owner='Andrew Collins – Producto'),
 ]
 spark.createDataFrame(reglas).write.mode("overwrite").option("overwriteSchema", "true").saveAsTable("workspace.yelp_gov.dq_rules")
+spark.sql("COMMENT ON TABLE workspace.yelp_gov.dq_rules IS 'E5 · Catálogo gobernado de reglas de calidad de datos (DQ-001 a DQ-020)'")
+COMENTARIOS_DQ = {
+    "rule_id": "Identificador único de la regla (DQ-001 a DQ-020)",
+    "target_table": "Tabla física evaluada en workspace.yelp_silver",
+    "column_name": "Columna evaluada (o * si la regla es a nivel de fila)",
+    "dimension": "Dimensión DQ: validity, uniqueness, completeness, consistency, accuracy o timeliness",
+    "description": "Regla en lenguaje de negocio aprobada por el Data Owner",
+    "sql_expression": "Predicado SQL que debe cumplirse sobre la tabla objetivo",
+    "criticality": "critical, high o medium; las reglas critical actúan como Quality Gate en E7",
+    "threshold_pct": "Porcentaje mínimo de filas que deben cumplir la regla (0 a 100)",
+    "threshold_rationale": "Justificación de negocio del umbral",
+    "failure_action": "Acción acordada si la regla no alcanza su umbral",
+    "rule_owner": "Data Owner responsable de la regla",
+}
+for col, txt in COMENTARIOS_DQ.items():
+    spark.sql(f"ALTER TABLE workspace.yelp_gov.dq_rules ALTER COLUMN {col} COMMENT '{txt}'")
 display(spark.table("workspace.yelp_gov.dq_rules").orderBy("rule_id"))
 
 # COMMAND ----------
 
-# DBTITLE 1: Motor genérico de evaluación (no modificar — extender si hace falta)
+# DBTITLE 1,Motor genérico de evaluación (no modificar — extender si hace falta)
 from pyspark.sql import functions as F
 
 def evaluar_reglas():
@@ -220,43 +236,43 @@ display(evaluar_reglas())
 
 # COMMAND ----------
 
-# DBTITLE 1: Scorecard de calidad (insumo directo del dashboard E8)
-%sql
-SELECT r.dimension,
-       count(*)                                    AS reglas,
-       sum(CASE WHEN res.passed THEN 1 ELSE 0 END) AS reglas_ok,
-       round(avg(res.compliance_pct), 2)           AS cumplimiento_promedio
-FROM workspace.yworkspace.yelp_gov.dq_ruless
-JOIN workspace.yelp_gov.dq_rules r USING (rule_id)
-WHERE res.executed_at = (SELECT max(executed_at) FROM workspace.yelp_gov.dq_results)
-GROUP BY r.dimension ORDER BY cumplimiento_promedio;
+# DBTITLE 1,Scorecard de calidad (insumo directo del dashboard E8)
+# MAGIC %sql
+# MAGIC SELECT r.dimension,
+# MAGIC        count(*)                                    AS reglas,
+# MAGIC        sum(CASE WHEN res.passed THEN 1 ELSE 0 END) AS reglas_ok,
+# MAGIC        round(avg(res.compliance_pct), 2)           AS cumplimiento_promedio
+# MAGIC FROM workspace.yelp_gov.dq_results res
+# MAGIC JOIN workspace.yelp_gov.dq_rules r USING (rule_id)
+# MAGIC WHERE res.executed_at = (SELECT max(executed_at) FROM workspace.yelp_gov.dq_results)
+# MAGIC GROUP BY r.dimension ORDER BY cumplimiento_promedio;
 
 # COMMAND ----------
 
-# DBTITLE 1: Reglas fallidas de la última corrida y decisión documentada (extensión)
-%sql
-SELECT res.rule_id, r.dimension, r.criticality, r.threshold_pct, res.compliance_pct,
-       r.failure_action, r.rule_owner
-FROM workspace.yelp_gov.dq_results res
-JOIN workspace.yelp_gov.dq_rules r USING (rule_id)
-WHERE res.executed_at = (SELECT max(executed_at) FROM workspace.yelp_gov.dq_results)
-  AND NOT res.passed
-ORDER BY CASE r.criticality WHEN 'critical' THEN 1 WHEN 'high' THEN 2 ELSE 3 END, res.rule_id;
+# DBTITLE 1,Reglas fallidas de la última corrida y decisión documentada (extensión)
+# MAGIC %sql
+# MAGIC SELECT res.rule_id, r.dimension, r.criticality, r.threshold_pct, res.compliance_pct,
+# MAGIC        r.failure_action, r.rule_owner
+# MAGIC FROM workspace.yelp_gov.dq_results res
+# MAGIC JOIN workspace.yelp_gov.dq_rules r USING (rule_id)
+# MAGIC WHERE res.executed_at = (SELECT max(executed_at) FROM workspace.yelp_gov.dq_results)
+# MAGIC   AND NOT res.passed
+# MAGIC ORDER BY CASE r.criticality WHEN 'critical' THEN 1 WHEN 'high' THEN 2 ELSE 3 END, res.rule_id;
 
 # COMMAND ----------
 
-# DBTITLE 1: Historial de corridas (≥2 en fechas distintas) (extensión)
-%sql
-SELECT date(executed_at) AS fecha, executed_at,
-       count(*) AS reglas_evaluadas,
-       sum(CASE WHEN passed THEN 1 ELSE 0 END) AS reglas_ok
-FROM workspace.yelp_gov.dq_results
-GROUP BY date(executed_at), executed_at
-ORDER BY executed_at DESC;
+# DBTITLE 1,Historial de corridas (≥2 en fechas distintas) (extensión)
+# MAGIC %sql
+# MAGIC SELECT date(executed_at) AS fecha, executed_at,
+# MAGIC        count(*) AS reglas_evaluadas,
+# MAGIC        sum(CASE WHEN passed THEN 1 ELSE 0 END) AS reglas_ok
+# MAGIC FROM workspace.yelp_gov.dq_results
+# MAGIC GROUP BY date(executed_at), executed_at
+# MAGIC ORDER BY executed_at DESC;
 
 # COMMAND ----------
 
-# DBTITLE 1: Bonus — calidad preventiva con constraint CHECK (extensión, desactivada por defecto)
+# DBTITLE 1,Bonus — calidad preventiva con constraint CHECK (extensión, desactivada por defecto)
 # Detectiva: el motor mide después de cargar. Preventiva: Delta rechaza en la escritura las filas que violan el CHECK.
 # Activar solo después de que DQ-004 esté en 100 %: si hay filas que violan la condición, el ALTER falla,
 # y una vez activo, cualquier carga con estrellas fuera de escala hace fallar el pipeline.
