@@ -310,13 +310,13 @@ print("Tags de clasificación aplicados ✔ (insumo directo de E6)")
 # MAGIC 2. **Lo que jamás puede inferir el motor y debe negociarse con el Negocio (Marco DAMA-DMBOK 2):**
 # MAGIC    * **Accountability (`Responsable / Data Owner`):** Unity Catalog sabe qué cuenta técnica ejecutó el `CREATE TABLE`, pero no sabe quién responde legal y funcionalmente ante el comité ejecutivo. Fue indispensable acordar en la Matriz RACI que **Andrew Collins (VP of Product)** asume la propiedad de *Negocio* y *Contenido*, **Rafael Nakamura (Trust & Safety)** custodia los atributos sensibles de *Usuario*, y **Carla Romero (Operaciones Comerciales)** gobierna *Interacción*.
 # MAGIC    * **Clasificación de Sensibilidad y Privacidad (`Público`, `Interno`, `Confidencial`, `Restringido`):** Para el motor Spark, `slv_business.name` y `slv_user.name` son ambos simples columnas `STRING`. Solo el acuerdo de gobierno y análisis legal (RGPD Art. 5/17, CCPA/CPRA y Ley N° 29733) permite clasificar `slv_user.name` como **Restringido/PII**, `slv_review.text` como **Confidencial (PII indirecta)** y propagar ese criterio como **tags activos (`ALTER TABLE ... SET TAGS`)** y máscaras dinámicas (E6).
-# MAGIC    * **Políticas de Retención y Reglas de Calidad (`DQ-001` a `DQ-015`):** Los plazos de conservación (36 meses tras baja de cuenta para PII vs. 60 meses para agregados Gold) y los umbrales de tolerancia de calidad (100% en validez de estrellas `DQ-004` vs. 99.5% en reseñas duplicadas `DQ-002`) reflejan decisiones de negocio y apetito de riesgo que el Data Owner firma y la plataforma ejecuta.
+# MAGIC    * **Políticas de Retención y Reglas de Calidad (`DQ-001` a `DQ-020`):** Los plazos de conservación (36 meses tras baja de cuenta para PII vs. 60 meses para agregados Gold) y los umbrales de tolerancia de calidad (100% en validez de estrellas `DQ-004` vs. 99.5% en reseñas duplicadas `DQ-002`) reflejan decisiones de negocio y apetito de riesgo que el Data Owner firma y la plataforma ejecuta.
 # MAGIC
 # MAGIC ---
 # MAGIC ### Definition of Done (E4.2)
 # MAGIC - [x] 100 % de las columnas de `yelp_silver` y `yelp_gold` presentes en el diccionario.
 # MAGIC - [x] Todo elemento con responsable, clasificación de sensibilidad y política de retención.
-# MAGIC - [x] Toda regla citada como `DQ-nnn` existe en `yelp_gov.dq_rules` (`DQ-001` a `DQ-015`, sin huérfanas).
+# MAGIC - [x] Toda regla citada como `DQ-nnn` existe en `yelp_gov.dq_rules` (`DQ-001` a `DQ-020`, sin huérfanas).
 # MAGIC - [x] Los `physical_name` coinciden exactamente con Unity Catalog (validador 1 en 100 %).
 # MAGIC - [x] Tags de clasificación aplicados y visibles en el catálogo.
 # MAGIC # MAGIC - [x] Párrafo de reflexión: ¿qué se hereda del catálogo y qué debe negociarse con el negocio?

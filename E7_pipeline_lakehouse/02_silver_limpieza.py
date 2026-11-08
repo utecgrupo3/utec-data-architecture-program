@@ -339,7 +339,7 @@ WHEN MATCHED THEN UPDATE SET u.yelping_since = r.first_review_date
 
 # COMMAND ----------
 
-# DBTITLE 1,9. Quality Gate (E5): evaluación de las 15 reglas
+# DBTITLE 1,9. Quality Gate (E5): evaluación de las 20 reglas
 # MAGIC %run ../E5_calidad_datos/01_reglas_calidad
 
 # COMMAND ----------

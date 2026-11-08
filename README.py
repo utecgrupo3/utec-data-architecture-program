@@ -126,7 +126,7 @@
 # MAGIC | **4** | **1. Bronze y DDL** | `E7_pipeline_lakehouse/01_bronze_ingesta.py` | Databricks | Ingesta batch (`brz_business`, `brz_user`, `brz_tip`, `brz_checkin`) e incremental con Auto Loader (`brz_review`) hacia `workspace.yelp_bronze`, con columnas de auditoría `_source_file` e `_ingested_at`. Registra cada carga en `yelp_gov.pipeline_run_log`. |
 # MAGIC | **5** | **1. Bronze y DDL** | `E3_modelo_fisico/01_modelo_fisico_ddl.py` | Databricks | Crea el DDL físico de las 10 tablas Silver y las 16 tablas Gold según `yelp_silver.txt` / `yelp_gold.txt`, con comentarios, PK/FK, constraints `CHECK` y Change Data Feed. Se ejecuta con `%run` desde el paso 6. |
 # MAGIC | **6** | **2. Silver, DQ y Metadata** | `E7_pipeline_lakehouse/02_silver_limpieza.py` | Databricks | Limpia desde Bronze y puebla las 10 tablas de `workspace.yelp_silver`: golden record de negocios, categorías normalizadas, amistades, check-ins a grano evento y cuarentena de reseñas en `slv_review_quarantine`. Termina con el Quality Gate de E5. |
-# MAGIC | **7** | **2. Silver, DQ y Metadata** | `E5_calidad_datos/01_reglas_calidad.py` | Databricks | Registra las 15 reglas (`DQ-001` a `DQ-015`) en `yelp_gov.dq_rules` y guarda cada evaluación en `yelp_gov.dq_results`. Se ejecuta con `%run` desde el paso 6; las reglas `critical` detienen el pipeline. |
+# MAGIC | **7** | **2. Silver, DQ y Metadata** | `E5_calidad_datos/01_reglas_calidad.py` | Databricks | Registra las 20 reglas (`DQ-001` a `DQ-020`) en `yelp_gov.dq_rules` y guarda cada evaluación en `yelp_gov.dq_results`. Se ejecuta con `%run` desde el paso 6; las reglas `critical` detienen el pipeline. |
 # MAGIC | **8** | **2. Silver, DQ y Metadata** | `E4_diccionario_glosario/01_glosario_negocio.py` | Databricks | Sincroniza la plantilla Excel de Glosario al Volume `/Volumes/workspace/yelp_gov/artifacts/` y puebla `yelp_gov.business_glossary`. |
 # MAGIC | **9** | **2. Silver, DQ y Metadata** | `E4_diccionario_glosario/02_diccionario_datos.py` | Databricks | Sincroniza la plantilla Excel de Diccionario, cruza contra `information_schema` (E3) y `dq_rules` (E5), puebla `yelp_gov.data_dictionary` y aplica el tag `classification` por columna. |
 # MAGIC | **10** | **3. Gold y Gobierno UC** | `E7_pipeline_lakehouse/03_gold_productos_datos.py` | Databricks | Puebla el modelo dimensional de `workspace.yelp_gold`: 4 dimensiones (`gld_dim_*`), el puente `gld_bridge_business_category`, 3 hechos (`gld_fact_review`, `gld_fact_checkin`, `gld_fact_tip`) y 8 agregados (`gld_agg_*`). |
@@ -149,7 +149,7 @@
 # MAGIC    ↓
 # MAGIC [Paso 6]  E7_pipeline_lakehouse/02_silver_limpieza.py  (Puebla las 10 tablas slv_*, incluida la cuarentena)
 # MAGIC    ↓
-# MAGIC [Paso 7]  E5_calidad_datos/01_reglas_calidad.py        (Registra DQ-001..DQ-015 en dq_rules y evalúa en dq_results)
+# MAGIC [Paso 7]  E5_calidad_datos/01_reglas_calidad.py        (Registra DQ-001..DQ-020 en dq_rules y evalúa en dq_results)
 # MAGIC    ↓
 # MAGIC [Paso 8]  E4_diccionario_glosario/01_glosario_negocio.py   (Carga Excel de Glosario → yelp_gov.business_glossary)
 # MAGIC    ↓

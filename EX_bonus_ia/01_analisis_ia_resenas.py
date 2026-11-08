@@ -153,7 +153,7 @@ display(spark.table("workspace.yelp_gold.gld_review_ai_enriched").limit(15))
 # MAGIC > Por ello la regla se amplió con una **severidad MEDIA** (`SOSPECHA_MEDIA_*`): con una regla binaria (solo `positive`/`negative`) la cola de revisión de Trust & Safety quedaba vacía y ocultaba casos relevantes.
 # MAGIC
 # MAGIC 1. **Detección de Anomalías y Fraude Semántico (*Rafael Nakamura — Trust & Safety*):**
-# MAGIC    * Las reseñas clasificadas como `ALTA_SOSPECHA_5ESTRELLAS_NEGATIVO` (`stars >= 4 AND sentiment = 'negative'`) capturan dos patrones que las reglas determinísticas tradicionales (`DQ-001` a `DQ-015`) no pueden detectar por sí solas:
+# MAGIC    * Las reseñas clasificadas como `ALTA_SOSPECHA_5ESTRELLAS_NEGATIVO` (`stars >= 4 AND sentiment = 'negative'`) capturan dos patrones que las reglas determinísticas tradicionales (`DQ-001` a `DQ-020`) no pueden detectar por sí solas:
 # MAGIC      * **Granjas de bots de reputación mal configuradas:** scripts que inyectan `stars = 5` para inflar artificialmente el rating de un comercio pagador, pero reciclan textos genéricos de quejas copiados de otros foros.
 # MAGIC      * **Reseñas sarcásticas o extorsivas:** usuarios que otorgan 5 estrellas para posicionar su comentario en la parte superior del feed mientras denuncian intoxicaciones o maltrato severo en el texto.
 # MAGIC    * Las reseñas con `DISONANCIA_BAJA_ESTRELLA_POSITIVO` (`stars <= 2 AND sentiment = 'positive'`) suelen corresponder a **errores de usabilidad (UX)** en la app móvil (usuarios que querían dar 5 estrellas pero tocaron 1 estrella por error y escribieron *"Excelente comida y servicio"*). Estas no deben enviarse a cuarentena punitiva, sino activar un flujo de confirmación en la UI móvil de Producto.
