@@ -5,213 +5,177 @@
 # MAGIC
 # MAGIC El entregable comprende **DOS artefactos en el workspace**:
 # MAGIC 1. **AI/BI Dashboard** *"Plataforma de Datos YelpConnect — Grupo 03 (Data Evolution)"* con 2 páginas:
-# MAGIC    - **Página 1 · Negocio (Foco: Producto — Andrew Collins, Ops Comerciales — Carla Romero, Trust & Safety — Rafael Nakamura):** KPIs certificados de rating bayesiano ($BWR$), crecimiento de reseñas ($NRG$), afluencia homologada de check-ins ($HAI$), retención de cohortes ($CRR$) y salud de reseñas ($RHR$).
-# MAGIC    - **Página 2 · Gobierno y Operaciones (Foco: Chief Data Officer — Laura Hernández):** Scorecard de calidad por dimensión DAMA-DMBOK (**E5**), completitud de metadatos en diccionario y glosario (**E4**), cobertura de ownership RACI (**E6**) y observabilidad FinOps del pipeline (**E7**).
-# MAGIC 2. **Genie Space** sobre la capa `workspace.yelp_gold`, configurado con las instrucciones y sinónimos del Glosario de Negocio (**E4**) para consultas en lenguaje natural.
+# MAGIC    - **Página 1 · Negocio (Producto — Andrew Collins, Ops Comerciales — Carla Romero, Trust & Safety — Rafael Nakamura):** calificación válida y bayesiana, crecimiento de reseñas, check-ins oficiales, retención de cohortes y salud de reseñas.
+# MAGIC    - **Página 2 · Gobierno y Operaciones (Chief Data Officer — Laura Hernández):** scorecard de calidad (**E5**), cobertura de diccionario y glosario (**E4**), ownership RACI (**E6**) y observabilidad del pipeline (**E7**).
+# MAGIC 2. **Genie Space** sobre `workspace.yelp_gold`, con las instrucciones y sinónimos del Glosario de Negocio (**E4**).
 # MAGIC
-# MAGIC **Regla de Arquitectura:** El dashboard consume **ÚNICAMENTE** `workspace.yelp_gold` y `workspace.yelp_gov` (nunca `yelp_silver` ni `yelp_bronze`), validando el aislamiento de capas del Lakehouse.
+# MAGIC **Regla de arquitectura:** el dashboard consume **solo** `workspace.yelp_gold` y `workspace.yelp_gov` (nunca `yelp_silver` ni `yelp_bronze`).
 # MAGIC
-# MAGIC > **Trazabilidad —** este entregable **implementa** la **Sección 7 («Requerimientos de Información y KPIs por Stakeholder»)** del
-# MAGIC > **Documento Formal de Arquitectura de Datos (v1.2 · Equipo Data Evolution)**. Cada consulta (`Q1` a `Q8`) declara explícitamente el código de requerimiento (`REQ-01` a `REQ-06`) y el stakeholder cuyas decisiones habilita.
+# MAGIC Convención de Gold: los meses se guardan como `period_month` entero `AAAAMM`; para graficar se convierten con `to_date(CAST(period_month AS STRING), 'yyyyMM')`.
 
 # COMMAND ----------
 
-# DBTITLE 1,Q1 — Evolución mensual de reseñas, rating simple y Rating Bayesiano BWR (REQ-01 · Producto: Andrew Collins)
+# DBTITLE 1,Q1 — Evolución mensual de reseñas, calificación válida y bayesiana (REQ-01 · Producto: Andrew Collins)
 # MAGIC %sql
-# MAGIC -- Responde a REQ-01 (Andrew Collins, VP of Product):
-# MAGIC -- ¿Cómo evoluciona mensualmente el volumen de reseñas verificadas, el rating aritmético y el Rating Ponderado Bayesiano (ADR-02)?
-# MAGIC WITH votos_mes AS (
+# MAGIC WITH mensual AS (
 # MAGIC   SELECT
-# MAGIC     date_trunc('month', t.fecha)           AS mes,
-# MAGIC     sum(f.useful)                          AS votos_utilidad_total
-# MAGIC   FROM workspace.yelp_gold.gld_fact_resenas f
-# MAGIC   JOIN workspace.yelp_gold.gld_dim_tiempo t ON f.date_sk = t.date_sk
-# MAGIC   GROUP BY date_trunc('month', t.fecha)
+# MAGIC     to_date(CAST(a.period_month AS STRING), 'yyyyMM')   AS mes,
+# MAGIC     sum(a.valid_review_count)                           AS resenas_validas,
+# MAGIC     sum(a.review_count)                                 AS resenas_totales,
+# MAGIC     sum(a.review_author_count)                          AS autores_mes,
+# MAGIC     round(sum(a.valid_rating * a.valid_review_count) / nullif(sum(a.valid_review_count), 0), 2) AS calificacion_valida
+# MAGIC   FROM workspace.yelp_gold.gld_agg_business_month a
+# MAGIC   GROUP BY a.period_month
 # MAGIC ),
-# MAGIC mensual AS (
-# MAGIC   SELECT
-# MAGIC     k.mes,
-# MAGIC     sum(k.n_resenas)                         AS resenas_verificadas,
-# MAGIC     sum(k.usuarios_unicos)                   AS usuarios_activos_mes,
-# MAGIC     coalesce(max(v.votos_utilidad_total), 0) AS votos_utilidad_total,
-# MAGIC     round(avg(k.rating_promedio), 2)         AS rating_aritmetico,
-# MAGIC     round(avg(k.rating_bayesiano), 2)        AS rating_bayesiano_bwr
-# MAGIC   FROM workspace.yelp_gold.gld_kpi_negocio_mensual k
-# MAGIC   LEFT JOIN votos_mes v ON k.mes = v.mes
-# MAGIC   GROUP BY k.mes
+# MAGIC bayes AS (
+# MAGIC   SELECT to_date(CAST(period_month AS STRING), 'yyyyMM') AS mes, round(avg(bayesian_rating), 2) AS calificacion_bayesiana
+# MAGIC   FROM workspace.yelp_gold.gld_agg_business_bayesian_month
+# MAGIC   GROUP BY period_month
 # MAGIC )
 # MAGIC SELECT
-# MAGIC   mes,
-# MAGIC   resenas_verificadas,
-# MAGIC   usuarios_activos_mes,
-# MAGIC   votos_utilidad_total,
-# MAGIC   rating_aritmetico,
-# MAGIC   rating_bayesiano_bwr,
-# MAGIC   round(
-# MAGIC     100.0 * (resenas_verificadas - lag(resenas_verificadas) OVER (ORDER BY mes))
-# MAGIC     / nullif(lag(resenas_verificadas) OVER (ORDER BY mes), 0),
-# MAGIC     2
-# MAGIC   ) AS crecimiento_neto_nrg_pct
-# MAGIC FROM mensual
-# MAGIC ORDER BY mes;
+# MAGIC   m.mes,
+# MAGIC   m.resenas_validas,
+# MAGIC   m.resenas_totales,
+# MAGIC   m.autores_mes,
+# MAGIC   m.calificacion_valida,
+# MAGIC   b.calificacion_bayesiana,
+# MAGIC   round(100.0 * (m.resenas_validas - lag(m.resenas_validas) OVER (ORDER BY m.mes))
+# MAGIC         / nullif(lag(m.resenas_validas) OVER (ORDER BY m.mes), 0), 2) AS crecimiento_neto_pct
+# MAGIC FROM mensual m LEFT JOIN bayes b ON m.mes = b.mes
+# MAGIC ORDER BY m.mes;
 
 # COMMAND ----------
 
-# DBTITLE 1,Q2 — Scorecard de Salud de Calidad de Datos por Dimensión DAMA-DMBOK (Gobierno · CDO: Laura Hernández)
+# DBTITLE 1,Q2 — Scorecard de calidad de datos por dimensión (Gobierno · CDO: Laura Hernández)
 # MAGIC %sql
-# MAGIC -- Responde a la CDO (Laura Hernández):
-# MAGIC -- Estado actual del cumplimiento de las 15 reglas de calidad (DQ-001 a DQ-015) agrupadas en las 6 dimensiones DAMA-DMBOK.
 # MAGIC SELECT
-# MAGIC   r.dimension                                          AS dimension_calidad,
-# MAGIC   count(*)                                             AS total_reglas,
-# MAGIC   sum(CASE WHEN res.paso THEN 1 ELSE 0 END)            AS reglas_en_verde,
-# MAGIC   sum(CASE WHEN NOT res.paso THEN 1 ELSE 0 END)        AS reglas_en_rojo,
-# MAGIC   round(avg(res.pct_cumplimiento), 2)                  AS cumplimiento_promedio_pct,
-# MAGIC   min(res.pct_cumplimiento)                            AS cumplimiento_minimo_pct
-# MAGIC FROM workspace.yelp_gov.dq_resultados res
-# MAGIC JOIN workspace.yelp_gov.dq_reglas r USING (regla_id)
-# MAGIC WHERE res.ejecucion_ts = (SELECT max(ejecucion_ts) FROM workspace.yelp_gov.dq_resultados)
+# MAGIC   r.dimension                                    AS dimension_calidad,
+# MAGIC   count(*)                                       AS total_reglas,
+# MAGIC   sum(CASE WHEN res.passed THEN 1 ELSE 0 END)      AS reglas_en_verde,
+# MAGIC   sum(CASE WHEN NOT res.passed THEN 1 ELSE 0 END)  AS reglas_en_rojo,
+# MAGIC   round(avg(res.compliance_pct), 2)            AS cumplimiento_promedio_pct,
+# MAGIC   min(res.compliance_pct)                      AS cumplimiento_minimo_pct
+# MAGIC FROM workspace.yelp_gov.dq_results res
+# MAGIC JOIN workspace.yelp_gov.dq_rules r USING (rule_id)
+# MAGIC WHERE res.executed_at = (SELECT max(executed_at) FROM workspace.yelp_gov.dq_results)
 # MAGIC GROUP BY r.dimension
 # MAGIC ORDER BY cumplimiento_promedio_pct DESC;
 
 # COMMAND ----------
 
-# DBTITLE 1,Q3 — Indicadores Ejecutivos de Gobierno de Datos: E4 + E5 + E6 (Gobierno · CDO: Laura Hernández)
+# DBTITLE 1,Q3 — Indicadores ejecutivos de gobierno: E4 + E5 + E6 (Gobierno · CDO: Laura Hernández)
 # MAGIC %sql
-# MAGIC -- Responde a la CDO (Laura Hernández):
-# MAGIC -- Cobertura de documentación en Diccionario de Datos (E4), Glosario de Negocio (E4), Matriz RACI (E6) y Reglas DQ (E5).
 # MAGIC SELECT
-# MAGIC   (SELECT round(100.0 * sum(CASE WHEN descripcion_negocio IS NOT NULL AND length(trim(descripcion_negocio)) > 0 THEN 1 ELSE 0 END) / count(*), 1)
-# MAGIC      FROM workspace.yelp_gov.diccionario_datos)                                                 AS pct_columnas_documentadas,
-# MAGIC   (SELECT count(*) FROM workspace.yelp_gov.diccionario_datos)                                   AS total_atributos_diccionario,
-# MAGIC   (SELECT count(*) FROM workspace.yelp_gov.matriz_raci)                                         AS entidades_con_owner_raci,
-# MAGIC   (SELECT count(*) FROM workspace.yelp_gov.glosario_negocio)                                    AS terminos_glosario_aprobados,
-# MAGIC   (SELECT count(*) FROM workspace.yelp_gov.dq_reglas)                                           AS reglas_dq_activas,
-# MAGIC   (SELECT round(avg(pct_cumplimiento), 2)
-# MAGIC      FROM workspace.yelp_gov.dq_resultados
-# MAGIC     WHERE ejecucion_ts = (SELECT max(ejecucion_ts) FROM workspace.yelp_gov.dq_resultados))      AS indice_global_calidad_pct;
+# MAGIC   (SELECT round(100.0 * sum(CASE WHEN business_description IS NOT NULL AND length(trim(business_description)) > 0 THEN 1 ELSE 0 END) / count(*), 1)
+# MAGIC      FROM workspace.yelp_gov.data_dictionary)                                            AS pct_columnas_documentadas,
+# MAGIC   (SELECT count(*) FROM workspace.yelp_gov.data_dictionary)                              AS total_atributos_diccionario,
+# MAGIC   (SELECT count(*) FROM workspace.yelp_gov.raci_matrix)                                    AS entidades_con_owner_raci,
+# MAGIC   (SELECT count(*) FROM workspace.yelp_gov.business_glossary)                               AS terminos_glosario_aprobados,
+# MAGIC   (SELECT count(*) FROM workspace.yelp_gov.dq_rules)                                      AS reglas_dq_activas,
+# MAGIC   (SELECT round(avg(compliance_pct), 2)
+# MAGIC      FROM workspace.yelp_gov.dq_results
+# MAGIC     WHERE executed_at = (SELECT max(executed_at) FROM workspace.yelp_gov.dq_results)) AS indice_global_calidad_pct;
 
 # COMMAND ----------
 
-# DBTITLE 1,Q4 — Top Negocios por Rating Ponderado Bayesiano BWR y Utilidad Comunitaria CUR (REQ-01 / REQ-02 · Producto: Andrew Collins)
+# DBTITLE 1,Q4 — Top negocios por calificación bayesiana y utilidad (REQ-01 / REQ-02 · Producto: Andrew Collins)
 # MAGIC %sql
-# MAGIC -- Responde a REQ-01 y REQ-02 (Andrew Collins, VP of Product):
-# MAGIC -- Ranking de establecimientos para la insignia "Comercio Recomendado" evitando el sesgo de muestras pequeñas mediante BWR (ADR-02).
-# MAGIC WITH votos_negocio AS (
-# MAGIC   SELECT
-# MAGIC     business_sk,
-# MAGIC     sum(useful) AS votos_useful_acumulados
-# MAGIC   FROM workspace.yelp_gold.gld_fact_resenas
-# MAGIC   GROUP BY business_sk
+# MAGIC WITH votos AS (
+# MAGIC   SELECT business_key, sum(useful) AS votos_utiles
+# MAGIC   FROM workspace.yelp_gold.gld_fact_review
+# MAGIC   WHERE is_valid
+# MAGIC   GROUP BY business_key
+# MAGIC ),
+# MAGIC negocio AS (
+# MAGIC   SELECT business_key,
+# MAGIC          sum(valid_review_count)                                                       AS resenas_validas,
+# MAGIC          round(sum(valid_rating * valid_review_count) / nullif(sum(valid_review_count), 0), 2) AS calificacion_valida,
+# MAGIC          round(avg(bayesian_rating), 2)                                                AS calificacion_bayesiana
+# MAGIC   FROM workspace.yelp_gold.gld_agg_business_bayesian_month
+# MAGIC   GROUP BY business_key
 # MAGIC )
 # MAGIC SELECT
-# MAGIC   n.business_id,
-# MAGIC   n.nombre                                             AS nombre_comercio,
-# MAGIC   n.ciudad,
-# MAGIC   n.estado,
-# MAGIC   n.categoria_principal,
-# MAGIC   n.esta_abierto,
-# MAGIC   sum(k.n_resenas)                                     AS total_resenas_verificadas,
-# MAGIC   sum(k.usuarios_unicos)                               AS total_usuarios_unicos,
-# MAGIC   round(avg(k.rating_promedio), 2)                     AS rating_aritmetico_simple,
-# MAGIC   round(avg(k.rating_bayesiano), 2)                    AS rating_bayesiano_bwr,
-# MAGIC   coalesce(max(v.votos_useful_acumulados), 0)          AS votos_useful_acumulados,
-# MAGIC   round(coalesce(max(v.votos_useful_acumulados), 0) / nullif(sum(k.n_resenas), 0), 2) AS indice_utilidad_cur
-# MAGIC FROM workspace.yelp_gold.gld_kpi_negocio_mensual k
-# MAGIC JOIN workspace.yelp_gold.gld_dim_negocio n
-# MAGIC   ON k.business_id = n.business_id AND n.es_actual = true
-# MAGIC LEFT JOIN votos_negocio v
-# MAGIC   ON n.business_sk = v.business_sk
-# MAGIC GROUP BY n.business_id, n.nombre, n.ciudad, n.estado, n.categoria_principal, n.esta_abierto
-# MAGIC HAVING sum(k.n_resenas) >= 5
-# MAGIC ORDER BY rating_bayesiano_bwr DESC, total_resenas_verificadas DESC
+# MAGIC   d.business_key,
+# MAGIC   d.name                 AS negocio,
+# MAGIC   d.city,
+# MAGIC   d.primary_category,
+# MAGIC   d.is_open,
+# MAGIC   d.declared_stars,
+# MAGIC   n.resenas_validas,
+# MAGIC   n.calificacion_valida,
+# MAGIC   n.calificacion_bayesiana,
+# MAGIC   coalesce(v.votos_utiles, 0)                                         AS votos_utiles,
+# MAGIC   round(coalesce(v.votos_utiles, 0) / nullif(n.resenas_validas, 0), 2) AS utilidad_por_resena
+# MAGIC FROM negocio n
+# MAGIC JOIN workspace.yelp_gold.gld_dim_business d ON n.business_key = d.business_key
+# MAGIC LEFT JOIN votos v ON n.business_key = v.business_key
+# MAGIC WHERE n.resenas_validas >= 5
+# MAGIC ORDER BY calificacion_bayesiana DESC, resenas_validas DESC
 # MAGIC LIMIT 25;
 
 # COMMAND ----------
 
-# DBTITLE 1,Q5 — Evolución y Top de Afluencia Física Homologada: Check-ins Diarios HAI (REQ-02 / REQ-05 · Ops Comerciales: Carla Romero)
+# DBTITLE 1,Q5 — Check-ins oficiales por mes y categoría principal (REQ-02 / REQ-05 · Ops Comerciales: Carla Romero)
 # MAGIC %sql
-# MAGIC -- Responde a REQ-02 y REQ-05 (Carla Romero, Head of Commercial Ops & Ads / Andrew Collins, VP of Product):
-# MAGIC -- Conteo oficial homologado de visitas físicas deduplicadas por ventana horaria de 60 minutos (ADR-01 / Acta 01).
+# MAGIC -- checkin_count: check-ins no duplicados (DQ-010). active_hour_count: horas distintas con visitas (conteo homologado por ventana de 60 minutos).
 # MAGIC SELECT
-# MAGIC   date_trunc('month', c.fecha)                         AS mes_actividad,
-# MAGIC   n.ciudad,
-# MAGIC   n.categoria_principal,
-# MAGIC   count(DISTINCT c.business_id)                        AS comercios_con_trafico,
-# MAGIC   sum(c.checkins_validos)                              AS indice_afluencia_homologada_hai,
-# MAGIC   round(avg(c.checkins_validos), 2)                    AS promedio_checkins_diarios_por_comercio
-# MAGIC FROM workspace.yelp_gold.gld_checkins_diarios c
-# MAGIC JOIN workspace.yelp_gold.gld_dim_negocio n
-# MAGIC   ON c.business_id = n.business_id AND n.es_actual = true
-# MAGIC GROUP BY date_trunc('month', c.fecha), n.ciudad, n.categoria_principal
-# MAGIC ORDER BY mes_actividad DESC, indice_afluencia_homologada_hai DESC;
+# MAGIC   d.month_start                              AS mes,
+# MAGIC   b.primary_category,
+# MAGIC   count(DISTINCT c.business_key)             AS negocios_con_trafico,
+# MAGIC   sum(c.checkin_count)                       AS checkins_oficiales,
+# MAGIC   sum(c.active_hour_count)                   AS horas_con_afluencia,
+# MAGIC   round(avg(c.checkin_count), 2)             AS promedio_checkins_diarios_por_negocio
+# MAGIC FROM workspace.yelp_gold.gld_agg_business_checkin_day c
+# MAGIC JOIN workspace.yelp_gold.gld_dim_date d     ON c.date_key = d.date_key
+# MAGIC JOIN workspace.yelp_gold.gld_dim_business b ON c.business_key = b.business_key
+# MAGIC GROUP BY d.month_start, b.primary_category
+# MAGIC ORDER BY mes DESC, checkins_oficiales DESC;
 
 # COMMAND ----------
 
-# DBTITLE 1,Q6 — Monitoreo de Salud de Reseñas y Tasa de Cuarentena RHR (REQ-03 · Trust & Safety: Rafael Nakamura)
+# DBTITLE 1,Q6 — Salud de reseñas: válidas, duplicadas y en cuarentena (REQ-03 · Trust & Safety: Rafael Nakamura)
 # MAGIC %sql
-# MAGIC -- Responde a REQ-03 (Rafael Nakamura, Lead Trust & Safety / Andrew Collins, VP of Product):
-# MAGIC -- ¿Qué porcentaje de reseñas son aisladas en cuarentena por sospecha de duplicidad o incumplimiento DQ (Acta 02)?
 # MAGIC SELECT
-# MAGIC   date_trunc('month', mes)                             AS mes_evaluacion,
-# MAGIC   sum(resenas_verificadas)                             AS resenas_publicadas_gold,
-# MAGIC   sum(resenas_cuarentena)                              AS resenas_aisladas_cuarentena,
-# MAGIC   sum(resenas_verificadas + resenas_cuarentena)        AS total_resenas_procesadas,
-# MAGIC   round(
-# MAGIC     100.0 * sum(resenas_verificadas) / nullif(sum(resenas_verificadas + resenas_cuarentena), 0),
-# MAGIC     2
-# MAGIC   )                                                    AS ratio_salud_resenas_rhr_pct,
-# MAGIC   round(
-# MAGIC     100.0 * sum(resenas_cuarentena) / nullif(sum(resenas_verificadas + resenas_cuarentena), 0),
-# MAGIC     2
-# MAGIC   )                                                    AS tasa_rechazo_cuarentena_pct
-# MAGIC FROM workspace.yelp_gold.gld_salud_resenas
-# MAGIC GROUP BY date_trunc('month', mes)
-# MAGIC ORDER BY mes_evaluacion DESC;
+# MAGIC   to_date(CAST(period_month AS STRING), 'yyyyMM')                    AS mes,
+# MAGIC   valid_review_count                                                 AS resenas_validas,
+# MAGIC   invalid_review_count                                               AS resenas_duplicadas,
+# MAGIC   quarantined_review_count                                           AS resenas_en_cuarentena,
+# MAGIC   valid_review_count + invalid_review_count + quarantined_review_count AS total_recibidas,
+# MAGIC   round(100.0 * valid_review_count /
+# MAGIC         nullif(valid_review_count + invalid_review_count + quarantined_review_count, 0), 2) AS ratio_salud_pct,
+# MAGIC   round(100.0 * quarantine_rate, 2)                                  AS tasa_cuarentena_pct
+# MAGIC FROM workspace.yelp_gold.gld_agg_review_health_month
+# MAGIC ORDER BY mes DESC;
 
 # COMMAND ----------
 
-# DBTITLE 1,Q7 — Análisis de Retención Mensual de Cohortes de Usuarios CRR % (REQ-04 · Producto: Andrew Collins)
+# DBTITLE 1,Q7 — Retención mensual de cohortes de usuarios (REQ-04 · Producto: Andrew Collins)
 # MAGIC %sql
-# MAGIC -- Responde a REQ-04 (Andrew Collins, VP of Product):
-# MAGIC -- ¿Cuál es la tasa de retención de cohortes de usuarios según su mes/año de registro (yelping_since) a lo largo de su ciclo de vida?
-# MAGIC WITH cohortes AS (
-# MAGIC   SELECT
-# MAGIC     cohorte_mes,
-# MAGIC     mes_actividad,
-# MAGIC     CAST(round(months_between(mes_actividad, cohorte_mes), 0) AS INT)              AS mes_relativo,
-# MAGIC     CAST(round(usuarios_activos * 100.0 / nullif(retencion_pct, 0), 0) AS BIGINT)  AS usuarios_cohorte,
-# MAGIC     usuarios_activos,
-# MAGIC     retencion_pct                                                                  AS tasa_retencion_crr_pct
-# MAGIC   FROM workspace.yelp_gold.gld_cohortes_retencion_mensual
-# MAGIC )
 # MAGIC SELECT
-# MAGIC   cohorte_mes,
-# MAGIC   mes_actividad,
-# MAGIC   mes_relativo,
-# MAGIC   usuarios_cohorte,
-# MAGIC   usuarios_activos,
-# MAGIC   tasa_retencion_crr_pct
-# MAGIC FROM cohortes
-# MAGIC WHERE mes_relativo BETWEEN 0 AND 24
-# MAGIC ORDER BY cohorte_mes DESC, mes_relativo ASC
+# MAGIC   to_date(CAST(cohort_month AS STRING), 'yyyyMM')   AS cohorte,
+# MAGIC   to_date(CAST(activity_month AS STRING), 'yyyyMM') AS mes_actividad,
+# MAGIC   months_since_join                                 AS mes_relativo,
+# MAGIC   cohort_size                                       AS usuarios_cohorte,
+# MAGIC   active_user_count                                 AS usuarios_activos,
+# MAGIC   round(100.0 * retention_rate, 2)                  AS retencion_pct
+# MAGIC FROM workspace.yelp_gold.gld_agg_user_cohort_month
+# MAGIC WHERE months_since_join BETWEEN 0 AND 24
+# MAGIC ORDER BY cohorte DESC, mes_relativo ASC
 # MAGIC LIMIT 100;
 
 # COMMAND ----------
 
-# DBTITLE 1,Q8 — Observabilidad Operativa y Tendencia de la Bitácora del Pipeline Medallón (Gobierno & FinOps · CDO / Data Platform)
+# DBTITLE 1,Q8 — Observabilidad del pipeline medallón (Gobierno y FinOps · CDO / Data Platform)
 # MAGIC %sql
-# MAGIC -- Responde a la CDO (Laura Hernández) y al equipo de Data Platform (Sección 8 del Documento Formal):
-# MAGIC -- Volumetría procesada, tiempos de ejecución por capa Medallón y salud operativa del Lakeflow Job E7.4.
 # MAGIC SELECT
-# MAGIC   ejecucion_ts,
-# MAGIC   capa,
-# MAGIC   tabla,
-# MAGIC   filas                                                AS filas_procesadas,
-# MAGIC   duracion_seg,
-# MAGIC   round(filas / nullif(duracion_seg, 0), 1)            AS throughput_filas_por_seg
-# MAGIC FROM workspace.yelp_gov.pipeline_bitacora
-# MAGIC ORDER BY ejecucion_ts DESC, capa ASC
+# MAGIC   executed_at,
+# MAGIC   layer,
+# MAGIC   table_name,
+# MAGIC   row_count                                     AS filas_procesadas,
+# MAGIC   duration_sec,
+# MAGIC   round(row_count / nullif(duration_sec, 0), 1) AS throughput_filas_por_seg
+# MAGIC FROM workspace.yelp_gov.pipeline_run_log
+# MAGIC ORDER BY executed_at DESC, layer ASC
 # MAGIC LIMIT 50;
 
 # COMMAND ----------
@@ -221,49 +185,47 @@
 # MAGIC ## 2. Configuración del Genie Space sobre `workspace.yelp_gold`
 # MAGIC
 # MAGIC ### 2.1. Tablas conectadas al Genie Space
-# MAGIC * `workspace.yelp_gold.gld_kpi_negocio_mensual`
-# MAGIC * `workspace.yelp_gold.gld_checkins_diarios`
-# MAGIC * `workspace.yelp_gold.gld_salud_resenas`
-# MAGIC * `workspace.yelp_gold.gld_cohortes_retencion_mensual`
-# MAGIC * `workspace.yelp_gold.gld_dim_negocio`
-# MAGIC * `workspace.yelp_gold.gld_dim_usuario`
-# MAGIC * `workspace.yelp_gold.gld_dim_tiempo`
-# MAGIC * `workspace.yelp_gold.gld_fact_resenas`
+# MAGIC * `gld_dim_business`, `gld_dim_user`, `gld_dim_date`, `gld_dim_category`, `gld_bridge_business_category`
+# MAGIC * `gld_fact_review`, `gld_fact_checkin`, `gld_fact_tip`
+# MAGIC * `gld_agg_business_month`, `gld_agg_business_bayesian_month`, `gld_agg_business_checkin_day`, `gld_agg_review_health_month`, `gld_agg_user_cohort_month`
 # MAGIC
-# MAGIC ### 2.2. Instrucciones del Sistema y Sinónimos del Glosario E4 (Copiar en *Genie → Instructions*)
+# MAGIC ### 2.2. Instrucciones del sistema y sinónimos del Glosario E4 (copiar en *Genie → Instructions*)
 # MAGIC ```text
-# MAGIC Contexto de Negocio — Plataforma YelpConnect (Grupo 03 · Data Evolution):
-# MAGIC 1. "Rating oficial", "calificación justa" o "Rating Bayesiano (BWR)": usa SIEMPRE la columna `rating_bayesiano` de `workspace.yelp_gold.gld_kpi_negocio_mensual` (ponderado con umbral m=25 según ADR-02), nunca el promedio simple `rating_promedio`, salvo que el usuario pida explícitamente comparar ambos.
-# MAGIC 2. "Afluencia", "visitas físicas", "tráfico en tienda" o "Check-in Válido (HAI)": consulta `checkins_validos` en `workspace.yelp_gold.gld_checkins_diarios` (deduplicados por ventana horaria de 60 minutos según ADR-01 / Acta 01).
-# MAGIC 3. "Reseña Verificada": son los registros en `gld_fact_resenas` o `resenas_verificadas` en `gld_salud_resenas` que aprobaron el 100% de las reglas de calidad DQ-001 a DQ-015.
-# MAGIC 4. "Reseña en Cuarentena", "spam", "bots" o "rechazos de calidad": consulta `resenas_cuarentena` y `pct_cuarentena` en `workspace.yelp_gold.gld_salud_resenas`, y calcula el Ratio de Salud RHR = `100.0 - pct_cuarentena`.
-# MAGIC 5. "Retención de usuarios", "lealtad" o "Cohorte (CRR)": usa `retencion_pct` en `workspace.yelp_gold.gld_cohortes_retencion_mensual` filtrando `mes_actividad > cohorte_mes` (`months_between(mes_actividad, cohorte_mes) > 0`) cuando se pregunte por retención post-registro.
-# MAGIC 6. "Comercio activo" o "negocio vigente": filtra siempre `es_actual = true` y `esta_abierto = true` en `workspace.yelp_gold.gld_dim_negocio`.
+# MAGIC Contexto de negocio — Plataforma YelpConnect (Grupo 03 · Data Evolution):
+# MAGIC 1. "Rating oficial", "calificación justa" o "rating bayesiano": usa bayesian_rating de workspace.yelp_gold.gld_agg_business_bayesian_month (m = 25 reseñas), no el promedio simple, salvo que se pida comparar ambos.
+# MAGIC 2. "Afluencia", "visitas físicas" o "check-ins válidos": usa checkin_count de workspace.yelp_gold.gld_agg_business_checkin_day (ya excluye duplicados). "Horas con afluencia": active_hour_count.
+# MAGIC 3. "Reseña válida": filas de gld_fact_review con is_valid = true. Las métricas oficiales solo cuentan reseñas válidas.
+# MAGIC 4. "Reseña en cuarentena", "spam" o "rechazos de calidad": quarantined_review_count y quarantine_rate de workspace.yelp_gold.gld_agg_review_health_month.
+# MAGIC 5. "Retención" o "cohorte": retention_rate de workspace.yelp_gold.gld_agg_user_cohort_month; para retención posterior al alta filtra months_since_join > 0.
+# MAGIC 6. "Negocio activo": is_open = true en workspace.yelp_gold.gld_dim_business. "Categoría" de un negocio: primary_category.
+# MAGIC 7. Los meses (period_month, cohort_month, activity_month) son enteros AAAAMM.
 # MAGIC ```
 # MAGIC
-# MAGIC ### 2.3. Registro de Pruebas en Genie Space y Evidencia de Iteración Semántica
+# MAGIC ### 2.3. Registro de pruebas en Genie Space
 # MAGIC
-# MAGIC | # | Pregunta en Lenguaje Natural formulada a Genie | Resultado en Genie | Observación / Iteración de Instrucción Aplicada |
+# MAGIC | # | Pregunta en lenguaje natural | Resultado esperado | Instrucción que lo asegura |
 # MAGIC | :--- | :--- | :--- | :--- |
-# MAGIC | **P1** | *"¿Cuáles son los 10 comercios abiertos con mejor calificación oficial en la plataforma y cuántas reseñas verificadas tienen?"* | **Correcto (1.ª intención):** Genie cruzó `gld_kpi_negocio_mensual` con `gld_dim_negocio` (`esta_abierto = true AND es_actual = true`) ordenando por `avg(rating_bayesiano) DESC`. | La instrucción #1 evitó que Genie ordenara negocios con 1 sola reseña de 5.0 estrellas. |
-# MAGIC | **P2** | *"¿Cómo ha evolucionado mensualmente la cantidad de visitas físicas (check-ins válidos) por categoría principal de negocio?"* | **Correcto (1.ª intención):** Genie agrupó `sum(checkins_validos)` de `gld_checkins_diarios` unido a `gld_dim_negocio.categoria_principal` por mes. | El sinónimo `"visitas físicas" -> checkins_validos` del Glosario E4 guió la selección exacta de tabla. |
-# MAGIC | **P3** | *"¿Qué porcentaje de reseñas fueron enviadas a cuarentena cada mes y cuál es el ratio de salud RHR?"* | **Correcto (1.ª intención):** Consultó `gld_salud_resenas` calculando `sum(resenas_cuarentena)` y `100.0 - avg(pct_cuarentena)` por `mes`. | Alineado 1:1 con el requerimiento **REQ-03** de Rafael Nakamura. |
-# MAGIC | **P4 (Caso de Fallo + Corrección)** | *"¿Cuál es la tasa de retención promedio de las cohortes de usuarios después de su registro?"* | **Fallo inicial:** En el primer intento sin la cláusula de exclusión del mes cero, Genie promedió `retencion_pct` incluyendo `mes_actividad = cohorte_mes` (donde la retención es siempre `100.0%` por definición de alta), inflando el promedio. | **Corrección aplicada:** Se actualizó la Instrucción #5 en Genie agregando *"filtrando `mes_actividad > cohorte_mes` cuando se pregunte por retención post-registro"*. Al re-preguntar, Genie aplicó `WHERE mes_actividad > cohorte_mes` entregando la curva real de retención. |
+# MAGIC | **P1** | *"¿Cuáles son los 10 negocios abiertos con mejor calificación oficial y cuántas reseñas válidas tienen?"* | Une `gld_agg_business_bayesian_month` con `gld_dim_business` (`is_open = true`) y ordena por `bayesian_rating`. | #1 evita que suban negocios con una sola reseña de 5 estrellas. |
+# MAGIC | **P2** | *"¿Cómo evolucionan cada mes las visitas físicas por categoría?"* | Suma `checkin_count` de `gld_agg_business_checkin_day` por `primary_category` y mes. | #2 y #6. |
+# MAGIC | **P3** | *"¿Qué porcentaje de reseñas se envió a cuarentena cada mes?"* | Usa `quarantine_rate` de `gld_agg_review_health_month`. | #4. |
+# MAGIC | **P4** | *"¿Cuál es la retención promedio de las cohortes después del alta?"* | Promedia `retention_rate` con `months_since_join > 0`. | #5: sin el filtro, el mes 0 infla el promedio. |
+# MAGIC
+# MAGIC > Las pruebas con Genie deben volver a ejecutarse después del cambio de nombres de las tablas Gold, y registrarse aquí sus resultados reales.
 # MAGIC
 # MAGIC ---
-# MAGIC ## 3. Storytelling Ejecutivo por Página del AI/BI Dashboard
+# MAGIC ## 3. Storytelling ejecutivo por página
 # MAGIC
-# MAGIC ### Slide-Resumen Página 1 · Negocio y Producto (*Stakeholder Principal: Andrew Collins, VP of Product*)
-# MAGIC * **Mensaje Clave:** La adopción del **Rating Ponderado Bayesiano ($BWR$, ADR-02)** corrige la distorsión histórica del ranking público donde comercios nuevos con 1–2 reseñas desplazaban a establecimientos consolidados, mientras que la homologación horaria de check-ins (**ADR-01 / Acta 01**) concilia la métrica de tráfico físico entre Producto y Operaciones Comerciales (**Carla Romero**).
-# MAGIC * **Decisión Habilitada:** Priorizar las categorías con caída en $BWR$ y otorgar la insignia *"Comercio Recomendado YelpConnect"* únicamente a negocios con $BWR \ge 4.2$ y tasa de retención recurrente comprobada (`Q1`, `Q4`, `Q5`, `Q7`).
+# MAGIC ### Página 1 · Negocio y Producto (*Andrew Collins, VP of Product*)
+# MAGIC * **Mensaje clave:** la calificación bayesiana corrige el ranking donde negocios con 1–2 reseñas desplazaban a negocios consolidados, y el conteo oficial de check-ins (sin duplicados) concilia la métrica de tráfico entre Producto y Operaciones Comerciales (**Carla Romero**).
+# MAGIC * **Decisión habilitada:** priorizar las categorías con caída de calificación válida y reconocer como "Comercio Recomendado" a los negocios con calificación bayesiana alta y retención comprobada (`Q1`, `Q4`, `Q5`, `Q7`).
 # MAGIC
-# MAGIC ### Slide-Resumen Página 2 · Gobierno, Calidad y Confianza (*Stakeholders: Laura Hernández, CDO & Rafael Nakamura, Trust & Safety*)
-# MAGIC * **Mensaje Clave:** El **100% de las 106 columnas físicas** en Silver y Gold cuentan con documentación activa en el Diccionario E4, **7 entidades críticas** tienen asignación RACI formal en Unity Catalog (**E6**) y el **Quality Gate activo (E5)** aísla preventivamente las reseñas duplicadas o anómalas en `slv_review_cuarentena` antes de publicar Gold (`Q2`, `Q3`, `Q6`, `Q8`).
-# MAGIC * **Decisión Habilitada:** Auditar las campañas con picos en cuarentena sin alterar el rating público de los usuarios y certificar ante el Comité Ejecutivo que el Lakehouse opera dentro del presupuesto FinOps ($< 22\%$ de cuota Serverless diaria).
+# MAGIC ### Página 2 · Gobierno, calidad y confianza (*Laura Hernández, CDO, y Rafael Nakamura, Trust & Safety*)
+# MAGIC * **Mensaje clave:** todas las columnas de Silver y Gold están documentadas en el diccionario E4, las entidades críticas tienen RACI en Unity Catalog (E6) y el Quality Gate (E5) aísla en `slv_review_quarantine` las reseñas que incumplen reglas antes de publicar Gold (`Q2`, `Q3`, `Q6`, `Q8`).
+# MAGIC * **Decisión habilitada:** auditar los meses con picos de cuarentena o duplicados sin alterar la calificación pública y certificar que el Lakehouse opera dentro del presupuesto de cómputo.
 # MAGIC
 # MAGIC ---
 # MAGIC ### Definition of Done (E8)
-# MAGIC - [x] Consultas `Q1` a `Q8` operativas consumiendo exclusivamente `workspace.yelp_gold` y `workspace.yelp_gov`.
-# MAGIC - [x] Cada consulta y visual declara explícitamente el requerimiento (`REQ-01` a `REQ-06`) y el stakeholder al que responde.
-# MAGIC - [x] Genie Space documentado con 6 instrucciones semánticas del Glosario E4 + evidencia de iteración y corrección (`P4`).
-# MAGIC - [x] Storytelling ejecutivo (1 slide-resumen por página explicando la decisión de negocio y gobierno que habilita).
+# MAGIC - [x] Consultas `Q1` a `Q8` consumiendo solo `workspace.yelp_gold` y `workspace.yelp_gov`.
+# MAGIC - [x] Cada consulta declara el requerimiento (`REQ-01` a `REQ-06`) y el stakeholder.
+# MAGIC - [x] Genie Space documentado con instrucciones del Glosario E4.
+# MAGIC - [x] Storytelling ejecutivo por página.

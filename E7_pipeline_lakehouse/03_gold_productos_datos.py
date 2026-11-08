@@ -1,388 +1,440 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # E7.3 · Silver → Gold: Esquema Estrella Kimball y Productos de Datos (Grupo 03 · Data Evolution)
+# MAGIC # E7.3 · Silver → Gold: Modelo Dimensional y Productos de Datos (Grupo 03 · Data Evolution)
 # MAGIC **Cierra con:** M6 (construcción) + M9 (consumo)
 # MAGIC
-# MAGIC Gold materializa el **modelo dimensional Kimball (ADR-05)** definido en la Sección 4.3 del *Documento Formal de Arquitectura de Datos (v1.2)* y las tablas de KPIs que consume el dashboard E8.
-# MAGIC **Cada tabla gold responde a una pregunta explícita de un stakeholder del caso:**
+# MAGIC Gold materializa el **modelo dimensional de `yelp_modelo_logico.drawio` (pestaña Gold) / `yelp_gold.txt`**. Las tablas se crean en E3; aquí solo se cargan.
+# MAGIC Gold trabaja con el **negocio maestro** (`business_key = master_business_id`) y solo las **reseñas válidas** (`is_valid = true`) cuentan en las métricas oficiales.
 # MAGIC
-# MAGIC | Producto de datos / Objeto Gold | Stakeholder | Pregunta de negocio que responde | Requerimiento / ADR |
-# MAGIC | :--- | :--- | :--- | :--- |
-# MAGIC | `gld_kpi_negocio_mensual` | **Producto (Andrew Collins)** | ¿Cómo evoluciona el rating promedio, el rating ponderado bayesiano ($BWR$) y el volumen de reseñas por negocio y mes? | **REQ-01 · ADR-02** |
-# MAGIC | `gld_checkins_diarios` | **Ops Comerciales (Carla Romero)** | ¿Cuál es el conteo OFICIAL diario de check-ins válidos deduplicados por hora (HAI) por negocio? | **REQ-02, REQ-05 · ADR-01** |
-# MAGIC | `gld_salud_resenas` | **Trust & Safety (Rafael Nakamura)** | ¿Qué porcentaje de reseñas son aisladas en cuarentena por mes y cuál es el Ratio de Salud (RHR)? | **REQ-03 · Acta 02** |
-# MAGIC | `gld_cohortes_retencion_mensual` | **Producto (Andrew Collins)** | ¿Cuál es la tasa de retención mensual de cohortes de usuarios ($CRR\%$) según su mes de alta (`yelping_since`)? | **REQ-04 · ADR-05** |
-# MAGIC | `gld_dim_negocio` · `gld_dim_usuario` · `gld_dim_tiempo` · `gld_fact_resenas` | **Data Science (Mei Lin) & BI** | Esquema Estrella Kimball completo con dimensiones conformes (SCD1/SCD2), PII enmascarada y hechos atómicos de reseñas. | **ADR-05 · ADR-06** |
+# MAGIC | Producto de datos | Stakeholder | Pregunta de negocio que responde |
+# MAGIC | :--- | :--- | :--- |
+# MAGIC | `gld_dim_*`, `gld_bridge_business_category`, `gld_fact_review`, `gld_fact_checkin`, `gld_fact_tip` | **Data Science (Mei Lin) y BI** | Modelo estrella con dimensiones conformes y hechos atómicos |
+# MAGIC | `gld_agg_business_month` | **Producto (Andrew Collins)** | ¿Cómo evolucionan cada mes la calificación válida, el volumen, la utilidad y la brecha con la calificación declarada de cada negocio? |
+# MAGIC | `gld_agg_business_bayesian_month` | **Producto (Andrew Collins)** | ¿Qué negocios lideran el ranking sin el sesgo de los que tienen pocas reseñas? |
+# MAGIC | `gld_agg_business_week`, `gld_agg_business_checkin_day` | **Ops Comerciales (Carla Romero)** | ¿Cuál es el conteo oficial de check-ins y tips por negocio, por semana y por día? |
+# MAGIC | `gld_agg_category_month` | **Producto y Marketing** | ¿Cómo se comporta cada categoría principal mes a mes? |
+# MAGIC | `gld_agg_review_health_month` | **Trust & Safety (Rafael Nakamura)** | ¿Qué proporción de reseñas se rechaza o se marca como duplicada cada mes? |
+# MAGIC | `gld_agg_user_month`, `gld_agg_user_cohort_month` | **Producto (Andrew Collins)** | ¿Cuántos usuarios contribuyen cada mes y cuánto retiene cada cohorte? |
 
 # COMMAND ----------
 
-# DBTITLE 1,Inicialización de esquemas y helper de bitácora FinOps
+# DBTITLE 1,Inicialización: bitácora y helper de carga
 import time
 from pyspark.sql import functions as F
 
-spark.sql("CREATE SCHEMA IF NOT EXISTS workspace.yelp_gold")
 spark.sql("CREATE SCHEMA IF NOT EXISTS workspace.yelp_gov")
 spark.sql("""
-CREATE TABLE IF NOT EXISTS workspace.yelp_gov.pipeline_bitacora (
-  ejecucion_ts     TIMESTAMP,
-  capa             STRING,
-  tabla            STRING,
-  filas            BIGINT,
-  duracion_seg     DOUBLE
+CREATE TABLE IF NOT EXISTS workspace.yelp_gov.pipeline_run_log (
+  executed_at      TIMESTAMP COMMENT 'Momento del registro',
+  layer            STRING    COMMENT 'Capa medallón (bronze, silver, gold)',
+  table_name       STRING    COMMENT 'Tabla procesada',
+  row_count        BIGINT    COMMENT 'Filas resultantes en la tabla',
+  duration_sec     DOUBLE    COMMENT 'Duración en segundos de la etapa'
 ) COMMENT 'Observabilidad del pipeline: volumetría y duración por corrida'
 """)
 
 def registrar_bitacora(capa: str, tabla: str, filas: int, t0: float):
     dur = round(time.time() - t0, 2)
     spark.sql(f"""
-        INSERT INTO workspace.yelp_gov.pipeline_bitacora
+        INSERT INTO workspace.yelp_gov.pipeline_run_log
         VALUES (current_timestamp(), '{capa}', '{tabla}', {int(filas)}, {dur})
     """)
     print(f"✔ [{capa.upper()}] {tabla}: {filas:,} filas ({dur} s)")
 
-# COMMAND ----------
+def cargar(sql: str, tabla: str):
+    """Reemplaza el contenido de una tabla de E3 con el resultado de la consulta, respetando columnas y tipos."""
+    t0 = time.time()
+    esquema = spark.table(tabla).schema
+    (spark.sql(sql)
+        .select([F.col(c.name).cast(c.dataType).alias(c.name) for c in esquema])
+        .write.insertInto(tabla, overwrite=True))
+    registrar_bitacora("gold", tabla, spark.table(tabla).count(), t0)
 
-# DBTITLE 1,1. Esquema Estrella Kimball — Dimensión Tiempo (gld_dim_tiempo generada con sequence + explode)
-t0 = time.time()
+# Vista temporal con el negocio maestro de cada business_id (insumo de todas las tablas Gold).
 spark.sql("""
-CREATE TABLE IF NOT EXISTS workspace.yelp_gold.gld_dim_tiempo (
-  date_sk      INT     NOT NULL COMMENT 'Clave subrogada entera de fecha en formato YYYYMMDD',
-  fecha        DATE    NOT NULL COMMENT 'Fecha calendario en formato estándar YYYY-MM-DD',
-  anio         INT     NOT NULL COMMENT 'Año calendario de cuatro dígitos (ej. 2026)',
-  trimestre    INT     NOT NULL COMMENT 'Trimestre calendario del año (1 a 4)',
-  mes          INT     NOT NULL COMMENT 'Mes calendario del año (1 a 12)',
-  nombre_mes   STRING  NOT NULL COMMENT 'Nombre del mes para reportes ejecutivos',
-  dia_semana   STRING  NOT NULL COMMENT 'Nombre del día de la semana para análisis de estacionalidad intra-semanal',
-  CONSTRAINT pk_gld_dim_tiempo PRIMARY KEY (date_sk)
-)
-COMMENT 'Dimensión calendario generada programáticamente para el esquema estrella Kimball. Consumidor: Transversal.'
-TBLPROPERTIES (delta.enableChangeDataFeed = true)
-""")
-
-spark.sql("""
-INSERT OVERWRITE workspace.yelp_gold.gld_dim_tiempo
-SELECT
-  CAST(date_format(fecha, 'yyyyMMdd') AS INT) AS date_sk,
-  fecha                                       AS fecha,
-  year(fecha)                                 AS anio,
-  quarter(fecha)                              AS trimestre,
-  month(fecha)                                AS mes,
-  date_format(fecha, 'MMMM')                  AS nombre_mes,
-  date_format(fecha, 'EEEE')                  AS dia_semana
-FROM (
-  SELECT explode(sequence(to_date('2004-01-01'), to_date('2030-12-31'), interval 1 day)) AS fecha
-)
-""")
-registrar_bitacora("gold", "workspace.yelp_gold.gld_dim_tiempo",
-                   spark.table("workspace.yelp_gold.gld_dim_tiempo").count(), t0)
-
-# COMMAND ----------
-
-# DBTITLE 1,2. Esquema Estrella Kimball — Dimensión Negocio (gld_dim_negocio con SCD1/SCD2) y Dimensión Usuario (gld_dim_usuario con PII enmascarada)
-# --- 2.1 gld_dim_negocio ---
-t0_dn = time.time()
-spark.sql("""
-CREATE TABLE IF NOT EXISTS workspace.yelp_gold.gld_dim_negocio (
-  business_sk            STRING        NOT NULL COMMENT 'Clave subrogada (surrogate key) de la dimensión negocio',
-  business_id            STRING        NOT NULL COMMENT 'Clave natural del establecimiento comercial en YelpConnect',
-  nombre                 STRING        NOT NULL COMMENT 'Nombre comercial del establecimiento (SCD Tipo 1)',
-  ciudad                 STRING        NOT NULL COMMENT 'Ciudad normalizada del establecimiento comercial',
-  estado                 STRING                 COMMENT 'Código de estado o provincia de dos letras',
-  categoria_principal    STRING                 COMMENT 'Categoría comercial primaria extraída del primer elemento del arreglo para BI directo',
-  categorias             ARRAY<STRING>          COMMENT 'Arreglo completo de categorías comerciales del negocio (ADR-03)',
-  esta_abierto           BOOLEAN                COMMENT 'Estado operativo del negocio (auditado con historia SCD Tipo 2)',
-  fecha_inicio_vigencia  TIMESTAMP     NOT NULL COMMENT 'Fecha de inicio de vigencia del registro dimensional (SCD Tipo 2)',
-  fecha_fin_vigencia     TIMESTAMP              COMMENT 'Fecha de fin de vigencia del registro dimensional (NULL si es la versión actual)',
-  es_actual              BOOLEAN       NOT NULL COMMENT 'TRUE si el registro corresponde a la versión vigente actual del negocio',
-  CONSTRAINT pk_gld_dim_negocio PRIMARY KEY (business_sk)
-)
-COMMENT 'Dimensión conforme de Negocios con soporte híbrido SCD Tipo 1 y Tipo 2. Consumidor: Producto y Data Science.'
-TBLPROPERTIES (delta.enableChangeDataFeed = true)
-""")
-
-spark.sql("""
-INSERT OVERWRITE workspace.yelp_gold.gld_dim_negocio
-SELECT
-  sha2(concat_ws('|', business_id, cast(esta_abierto AS STRING)), 256) AS business_sk,
-  business_id,
-  nombre,
-  ciudad,
-  estado,
-  coalesce(element_at(categorias, 1), 'Sin Categoría')                AS categoria_principal,
-  categorias,
-  esta_abierto,
-  fecha_carga                                                         AS fecha_inicio_vigencia,
-  CAST(NULL AS TIMESTAMP)                                             AS fecha_fin_vigencia,
-  true                                                                AS es_actual
+CREATE OR REPLACE TEMP VIEW v_master AS
+SELECT business_id, master_business_id AS business_key
 FROM workspace.yelp_silver.slv_business
 """)
-registrar_bitacora("gold", "workspace.yelp_gold.gld_dim_negocio",
-                   spark.table("workspace.yelp_gold.gld_dim_negocio").count(), t0_dn)
 
-# --- 2.2 gld_dim_usuario (con enmascaramiento de PII según ADR-06) ---
-t0_du = time.time()
-spark.sql("""
-CREATE TABLE IF NOT EXISTS workspace.yelp_gold.gld_dim_usuario (
-  user_sk        STRING    NOT NULL COMMENT 'Clave subrogada (surrogate key) de la dimensión usuario',
-  user_id        STRING    NOT NULL COMMENT 'Clave natural seudonimizada del usuario en YelpConnect',
-  name_masked    STRING    NOT NULL COMMENT 'Nombre del usuario anonimizado/enmascarado para consumo analítico seguro (ADR-06)',
-  yelping_since  TIMESTAMP NOT NULL COMMENT 'Fecha de registro original del comensal para análisis de antigüedad y cohortes',
-  es_elite       BOOLEAN   NOT NULL COMMENT 'TRUE si el usuario cuenta con distinción activa en la comunidad Élite (SCD Tipo 2)',
-  average_stars  DOUBLE             COMMENT 'Calificación promedio histórica otorgada por el comensal',
-  es_actual      BOOLEAN   NOT NULL COMMENT 'TRUE si representa la versión vigente del perfil en la dimensión',
-  CONSTRAINT pk_gld_dim_usuario PRIMARY KEY (user_sk)
-)
-COMMENT 'Dimensión conforme de Usuarios con privacidad por diseño (nombre enmascarado). Consumidor: Producto y Data Science.'
-TBLPROPERTIES (delta.enableChangeDataFeed = true)
-""")
+# COMMAND ----------
 
-spark.sql("""
-INSERT OVERWRITE workspace.yelp_gold.gld_dim_usuario
+# DBTITLE 1,1. Dimensiones: fecha, categoría, puente negocio-categoría y negocio
+cargar("""
 SELECT
-  sha2(user_id, 256)                                   AS user_sk,
-  user_id,
-  concat(substr(coalesce(name, 'U'), 1, 1), '***')     AS name_masked,
+  CAST(date_format(d, 'yyyyMMdd') AS INT) AS date_key,
+  d                                       AS full_date,
+  year(d)                                 AS year,
+  month(d)                                AS month,
+  date_format(d, 'MMMM')                  AS month_name,
+  quarter(d)                              AS quarter,
+  CAST(date_trunc('week', d) AS DATE)     AS week_start,
+  trunc(d, 'MM')                          AS month_start
+FROM (SELECT explode(sequence(DATE'2004-01-01', DATE'2030-12-31', INTERVAL 1 DAY)) AS d)
+""", "workspace.yelp_gold.gld_dim_date")
+
+cargar("""
+SELECT category_id AS category_key, name
+FROM workspace.yelp_silver.slv_category
+""", "workspace.yelp_gold.gld_dim_category")
+
+# Categoría principal: la categoría del negocio con más negocios en la muestra; en empate, la primera alfabética.
+cargar("""
+WITH pares AS (
+  SELECT DISTINCT m.business_key, bc.category_id AS category_key
+  FROM workspace.yelp_silver.slv_business_category bc
+  JOIN v_master m ON bc.business_id = m.business_id
+),
+popularidad AS (
+  SELECT p.category_key, c.name, count(DISTINCT p.business_key) AS negocios
+  FROM pares p JOIN workspace.yelp_silver.slv_category c ON p.category_key = c.category_id
+  GROUP BY p.category_key, c.name
+)
+SELECT
+  p.business_key,
+  p.category_key,
+  row_number() OVER (PARTITION BY p.business_key ORDER BY pop.negocios DESC, pop.name ASC) = 1 AS is_primary
+FROM pares p JOIN popularidad pop ON p.category_key = pop.category_key
+""", "workspace.yelp_gold.gld_bridge_business_category")
+
+cargar("""
+SELECT
+  b.business_id AS business_key,
+  b.name,
+  b.city,
+  b.state,
+  c.name        AS primary_category,
+  b.stars       AS declared_stars,
+  b.is_open
+FROM workspace.yelp_silver.slv_business b
+LEFT JOIN workspace.yelp_gold.gld_bridge_business_category br
+  ON br.business_key = b.business_id AND br.is_primary
+LEFT JOIN workspace.yelp_gold.gld_dim_category c
+  ON c.category_key = br.category_key
+WHERE b.business_id = b.master_business_id
+""", "workspace.yelp_gold.gld_dim_business")
+
+# COMMAND ----------
+
+# DBTITLE 1,2. Dimensión usuario
+# La máscara PII de gld_dim_user.name se retira para recargar; la tarea E6 del job la vuelve a aplicar al final.
+# slv_user.name llega sin máscara porque la tarea Silver la retiró en esta misma corrida.
+tiene_mascara = (spark.table("workspace.information_schema.column_masks")
+    .filter((F.col("table_schema") == "yelp_gold") & (F.col("table_name") == "gld_dim_user") & (F.col("column_name") == "name"))
+    .count() > 0)
+if tiene_mascara:
+    spark.sql("ALTER TABLE workspace.yelp_gold.gld_dim_user ALTER COLUMN name DROP MASK")
+
+cargar("""
+SELECT
+  user_id               AS user_key,
+  name,
   yelping_since,
-  (length(trim(coalesce(elite, ''))) > 0)              AS es_elite,
-  average_stars,
-  true                                                 AS es_actual
+  fans,
+  average_stars         AS avg_stars,
+  elite_year_count > 0  AS is_elite
 FROM workspace.yelp_silver.slv_user
-""")
-registrar_bitacora("gold", "workspace.yelp_gold.gld_dim_usuario",
-                   spark.table("workspace.yelp_gold.gld_dim_usuario").count(), t0_du)
+""", "workspace.yelp_gold.gld_dim_user")
 
 # COMMAND ----------
 
-# DBTITLE 1,3. Esquema Estrella Kimball — Tabla de Hechos Atómica (gld_fact_resenas con FKs declaradas)
-t0_fr = time.time()
-spark.sql("""
-CREATE TABLE IF NOT EXISTS workspace.yelp_gold.gld_fact_resenas (
-  review_sk    STRING  NOT NULL COMMENT 'Clave subrogada del hecho atómico de reseña',
-  review_id    STRING  NOT NULL COMMENT 'Clave degenerada con el identificador original de la reseña verificada',
-  business_sk  STRING  NOT NULL COMMENT 'Clave foránea hacia la dimensión de negocios (gld_dim_negocio)',
-  user_sk      STRING  NOT NULL COMMENT 'Clave foránea hacia la dimensión de usuarios (gld_dim_usuario)',
-  date_sk      INT     NOT NULL COMMENT 'Clave foránea hacia la dimensión de tiempo (gld_dim_tiempo)',
-  stars        INT     NOT NULL COMMENT 'Métrica aditiva/semi-aditiva de calificación en estrellas (1 a 5)',
-  text_len     INT     NOT NULL COMMENT 'Longitud en caracteres del comentario de la reseña (sin exponer PII indirecta)',
-  useful       INT     NOT NULL COMMENT 'Cantidad de votos de utilidad comunitaria recibidos por la reseña',
-  CONSTRAINT pk_gld_fact_resenas PRIMARY KEY (review_sk),
-  CONSTRAINT fk_fact_negocio FOREIGN KEY (business_sk) REFERENCES workspace.yelp_gold.gld_dim_negocio(business_sk),
-  CONSTRAINT fk_fact_usuario FOREIGN KEY (user_sk) REFERENCES workspace.yelp_gold.gld_dim_usuario(user_sk),
-  CONSTRAINT fk_fact_tiempo  FOREIGN KEY (date_sk) REFERENCES workspace.yelp_gold.gld_dim_tiempo(date_sk)
-)
-COMMENT 'Tabla de hechos transaccional atómica (grano: 1 fila por reseña verificada). Consumidor: Producto y Data Science (Mei Lin).'
-TBLPROPERTIES (delta.enableChangeDataFeed = true)
-""")
-
-spark.sql("""
-INSERT OVERWRITE workspace.yelp_gold.gld_fact_resenas
-SELECT
-  sha2(r.review_id, 256)                                   AS review_sk,
-  r.review_id                                              AS review_id,
-  dn.business_sk                                           AS business_sk,
-  du.user_sk                                               AS user_sk,
-  CAST(date_format(r.fecha_resena, 'yyyyMMdd') AS INT)     AS date_sk,
-  r.stars                                                  AS stars,
-  length(trim(r.text))                                     AS text_len,
-  coalesce(r.useful, 0)                                    AS useful
-FROM workspace.yelp_silver.slv_review r
-JOIN workspace.yelp_gold.gld_dim_negocio dn
-  ON r.business_id = dn.business_id AND dn.es_actual = true
-JOIN workspace.yelp_gold.gld_dim_usuario du
-  ON r.user_id = du.user_id AND du.es_actual = true
-""")
-registrar_bitacora("gold", "workspace.yelp_gold.gld_fact_resenas",
-                   spark.table("workspace.yelp_gold.gld_fact_resenas").count(), t0_fr)
-
-# COMMAND ----------
-
-# DBTITLE 1,4. Producto Gold 1 — gld_kpi_negocio_mensual (Producto: Andrew Collins — Rating Promedio y Bayesiano ADR-02)
-t0_kpi = time.time()
-spark.sql("""
-CREATE TABLE IF NOT EXISTS workspace.yelp_gold.gld_kpi_negocio_mensual (
-  business_id       STRING    NOT NULL COMMENT 'Identificador único del establecimiento comercial evaluado',
-  nombre            STRING    NOT NULL COMMENT 'Nombre comercial del negocio para visualización en el dashboard E8',
-  ciudad            STRING    NOT NULL COMMENT 'Ciudad normalizada del establecimiento comercial',
-  mes               TIMESTAMP NOT NULL COMMENT 'Mes calendario truncado de evaluación del KPI (YYYY-MM-01)',
-  n_resenas         BIGINT    NOT NULL COMMENT 'Volumen mensual de reseñas verificadas recibidas por el negocio',
-  rating_promedio   DOUBLE    NOT NULL COMMENT 'Promedio aritmético simple de calificaciones del negocio en el mes',
-  rating_bayesiano  DOUBLE             COMMENT 'Rating Promedio Ponderado Bayesiano (BWR con m=25 reseñas según ADR-02)',
-  usuarios_unicos   BIGINT    NOT NULL COMMENT 'Cantidad de comensales únicos que reseñaron el negocio en el mes',
-  CONSTRAINT pk_gld_kpi_negocio_mensual PRIMARY KEY (business_id, mes)
-)
-COMMENT 'KPIs mensuales de satisfacción y volumen por negocio. Stakeholder: Producto (Andrew Collins — REQ-01).'
-TBLPROPERTIES (delta.enableChangeDataFeed = true)
-""")
-
-spark.sql("""
-INSERT OVERWRITE workspace.yelp_gold.gld_kpi_negocio_mensual
-WITH media_ciudad AS (
-  SELECT b.ciudad, avg(CAST(r.stars AS DOUBLE)) AS c_global
-  FROM workspace.yelp_silver.slv_review r
-  JOIN workspace.yelp_silver.slv_business b USING (business_id)
-  GROUP BY b.ciudad
-),
-agregado_mensual AS (
+# DBTITLE 1,3. Hechos: reseña (is_valid, DQ-002), check-in y tip
+# Una reseña no es válida si el mismo usuario ya publicó el mismo texto sobre el mismo negocio maestro (DQ-002);
+# se conserva como válida la primera publicada.
+cargar("""
+WITH r AS (
   SELECT
-    b.business_id,
-    b.nombre,
-    b.ciudad,
-    date_trunc('month', r.fecha_resena)          AS mes,
-    count(*)                                     AS n_resenas,
-    avg(CAST(r.stars AS DOUBLE))                 AS r_avg,
-    count(DISTINCT r.user_id)                    AS usuarios_unicos
+    r.review_id, m.business_key, r.user_id AS user_key, r.review_date,
+    r.stars, r.useful, r.funny, r.cool, r.loaded_at,
+    CASE WHEN r.text IS NOT NULL AND length(trim(r.text)) > 0
+         THEN row_number() OVER (
+                PARTITION BY r.user_id, m.business_key, md5(lower(trim(r.text)))
+                ORDER BY r.review_date, r.review_id)
+         ELSE 1 END AS orden_texto
   FROM workspace.yelp_silver.slv_review r
-  JOIN workspace.yelp_silver.slv_business b USING (business_id)
-  GROUP BY b.business_id, b.nombre, b.ciudad, date_trunc('month', r.fecha_resena)
+  JOIN v_master m ON r.business_id = m.business_id
 )
 SELECT
-  a.business_id,
-  a.nombre,
-  a.ciudad,
-  a.mes,
-  a.n_resenas,
-  round(a.r_avg, 2) AS rating_promedio,
-  round((a.n_resenas * a.r_avg + 25.0 * coalesce(mc.c_global, a.r_avg)) / (a.n_resenas + 25.0), 2) AS rating_bayesiano,
-  a.usuarios_unicos
-FROM agregado_mensual a
-LEFT JOIN media_ciudad mc USING (ciudad)
-""")
-registrar_bitacora("gold", "workspace.yelp_gold.gld_kpi_negocio_mensual",
-                   spark.table("workspace.yelp_gold.gld_kpi_negocio_mensual").count(), t0_kpi)
+  review_id,
+  business_key,
+  user_key,
+  CAST(date_format(review_date, 'yyyyMMdd') AS INT) AS date_key,
+  stars, useful, funny, cool, loaded_at,
+  orden_texto = 1                                    AS is_valid,
+  CASE WHEN orden_texto > 1 THEN 'DQ-002: mismo usuario, negocio y texto que una reseña anterior' END AS invalid_reason
+FROM r
+""", "workspace.yelp_gold.gld_fact_review")
+
+cargar("""
+SELECT
+  c.checkin_id,
+  m.business_key,
+  CAST(date_format(c.checkin_at, 'yyyyMMdd') AS INT) AS date_key,
+  hour(c.checkin_at)                                 AS checkin_hour,
+  c.is_duplicate,
+  c.loaded_at
+FROM workspace.yelp_silver.slv_checkin c
+JOIN v_master m ON c.business_id = m.business_id
+""", "workspace.yelp_gold.gld_fact_checkin")
+
+cargar("""
+SELECT
+  t.tip_id,
+  t.user_id                                        AS user_key,
+  m.business_key,
+  CAST(date_format(t.tip_date, 'yyyyMMdd') AS INT) AS date_key,
+  t.compliment_count,
+  t.loaded_at
+FROM workspace.yelp_silver.slv_tip t
+JOIN v_master m ON t.business_id = m.business_id
+""", "workspace.yelp_gold.gld_fact_tip")
 
 # COMMAND ----------
 
-# DBTITLE 1,5. Productos Gold 2, 3 y 4 — gld_checkins_diarios (Carla), gld_salud_resenas (Rafael) y gld_cohortes_retencion_mensual (Andrew)
-# --- 5.1 gld_checkins_diarios (Operaciones Comerciales — HAI / ADR-01) ---
-t0_chk = time.time()
+# DBTITLE 1,4. Agregados del modelo dimensional
+# Vistas base con el mes (AAAAMM) y la fecha de cada evento.
 spark.sql("""
-CREATE TABLE IF NOT EXISTS workspace.yelp_gold.gld_checkins_diarios (
-  business_id       STRING  NOT NULL COMMENT 'Identificador del establecimiento comercial visitado',
-  fecha             DATE    NOT NULL COMMENT 'Fecha calendario de las visitas presenciales confirmadas',
-  checkins_validos  BIGINT  NOT NULL COMMENT 'Conteo oficial homologado de check-ins válidos deduplicados por hora (HAI - ADR-01)',
-  CONSTRAINT pk_gld_checkins_diarios PRIMARY KEY (business_id, fecha)
-)
-COMMENT 'Conteo oficial diario de check-ins válidos para liquidación publicitaria y fidelidad. Stakeholder: Operaciones Comerciales (Carla Romero — REQ-02, REQ-05).'
-TBLPROPERTIES (delta.enableChangeDataFeed = true)
+CREATE OR REPLACE TEMP VIEW v_review AS
+SELECT f.*, d.full_date, d.week_start, CAST(date_format(d.full_date, 'yyyyMM') AS INT) AS period_month
+FROM workspace.yelp_gold.gld_fact_review f JOIN workspace.yelp_gold.gld_dim_date d USING (date_key)
+""")
+spark.sql("""
+CREATE OR REPLACE TEMP VIEW v_checkin AS
+SELECT f.*, d.full_date, d.week_start, CAST(date_format(d.full_date, 'yyyyMM') AS INT) AS period_month
+FROM workspace.yelp_gold.gld_fact_checkin f JOIN workspace.yelp_gold.gld_dim_date d USING (date_key)
+WHERE NOT f.is_duplicate
+""")
+spark.sql("""
+CREATE OR REPLACE TEMP VIEW v_tip AS
+SELECT f.*, d.full_date, d.week_start, CAST(date_format(d.full_date, 'yyyyMM') AS INT) AS period_month
+FROM workspace.yelp_gold.gld_fact_tip f JOIN workspace.yelp_gold.gld_dim_date d USING (date_key)
 """)
 
-spark.sql("""
-INSERT OVERWRITE workspace.yelp_gold.gld_checkins_diarios
-SELECT
-  business_id,
-  to_date(fecha_checkin) AS fecha,
-  count(*)               AS checkins_validos
-FROM workspace.yelp_silver.slv_checkin
-GROUP BY business_id, to_date(fecha_checkin)
-""")
-registrar_bitacora("gold", "workspace.yelp_gold.gld_checkins_diarios",
-                   spark.table("workspace.yelp_gold.gld_checkins_diarios").count(), t0_chk)
-
-# --- 5.2 gld_salud_resenas (Trust & Safety — Rafael Nakamura / REQ-03) ---
-t0_sal = time.time()
-spark.sql("""
-CREATE TABLE IF NOT EXISTS workspace.yelp_gold.gld_salud_resenas (
-  mes                  TIMESTAMP NOT NULL COMMENT 'Mes calendario de auditoría de calidad y moderación de reseñas',
-  resenas_verificadas  BIGINT    NOT NULL COMMENT 'Volumen mensual de reseñas que aprobaron el 100% de reglas DQ críticas',
-  resenas_cuarentena   BIGINT    NOT NULL COMMENT 'Volumen mensual de reseñas aisladas preventivamente en slv_review_cuarentena',
-  pct_cuarentena       DOUBLE    NOT NULL COMMENT 'Porcentaje de reseñas en cuarentena sobre el total bruto del mes (complemento RHR)',
-  CONSTRAINT pk_gld_salud_resenas PRIMARY KEY (mes)
-)
-COMMENT 'Métricas mensuales de salud de calidad de reseñas y tasa de cuarentena. Stakeholder: Trust & Safety (Rafael Nakamura — REQ-03).'
-TBLPROPERTIES (delta.enableChangeDataFeed = true)
-""")
-
-spark.sql("""
-INSERT OVERWRITE workspace.yelp_gold.gld_salud_resenas
-WITH ok AS (
-  SELECT date_trunc('month', fecha_resena) AS mes, count(*) AS resenas_verificadas
-  FROM workspace.yelp_silver.slv_review
-  GROUP BY 1
+cargar("""
+WITH rev AS (
+  SELECT business_key, period_month,
+         count(*)                                                    AS review_count,
+         avg(stars)                                                  AS avg_review_stars,
+         count(DISTINCT user_key)                                    AS review_author_count,
+         count_if(is_valid)                                          AS valid_review_count,
+         avg(CASE WHEN is_valid THEN stars END)                      AS valid_rating,
+         count_if(is_valid AND useful > 0)                           AS valid_useful,
+         count_if(is_valid AND stars <= 2)                           AS valid_negative,
+         count_if(NOT is_valid)                                      AS invalid_count,
+         max(CASE WHEN is_valid THEN full_date END)                  AS last_valid_in_month
+  FROM v_review GROUP BY business_key, period_month
 ),
-cuar AS (
-  SELECT date_trunc('month', coalesce(fecha_resena, fecha_rechazo)) AS mes, count(*) AS resenas_cuarentena
-  FROM workspace.yelp_silver.slv_review_cuarentena
-  GROUP BY 1
-)
-SELECT
-  coalesce(ok.mes, cuar.mes)                                  AS mes,
-  coalesce(ok.resenas_verificadas, 0)                         AS resenas_verificadas,
-  coalesce(cuar.resenas_cuarentena, 0)                        AS resenas_cuarentena,
-  round(
-    100.0 * coalesce(cuar.resenas_cuarentena, 0) /
-    greatest(coalesce(ok.resenas_verificadas, 0) + coalesce(cuar.resenas_cuarentena, 0), 1),
-    2
-  )                                                           AS pct_cuarentena
-FROM ok
-FULL OUTER JOIN cuar ON ok.mes = cuar.mes
-WHERE coalesce(ok.mes, cuar.mes) IS NOT NULL
-""")
-registrar_bitacora("gold", "workspace.yelp_gold.gld_salud_resenas",
-                   spark.table("workspace.yelp_gold.gld_salud_resenas").count(), t0_sal)
-
-# --- 5.3 gld_cohortes_retencion_mensual (Producto — Andrew Collins / REQ-04) ---
-t0_coh = time.time()
-spark.sql("""
-CREATE TABLE IF NOT EXISTS workspace.yelp_gold.gld_cohortes_retencion_mensual (
-  cohorte_mes       DATE    NOT NULL COMMENT 'Mes calendario de registro original del usuario (cohorte de adquisición)',
-  mes_actividad     DATE    NOT NULL COMMENT 'Mes calendario en el que se registra la interacción recurrente de la cohorte',
-  usuarios_activos  BIGINT  NOT NULL COMMENT 'Cantidad de usuarios únicos de la cohorte con actividad validada en el mes',
-  retencion_pct     DOUBLE  NOT NULL COMMENT 'Tasa de Retención de Cohortes (CRR %) respecto al tamaño inicial de la camada',
-  CONSTRAINT pk_gld_cohortes_retencion PRIMARY KEY (cohorte_mes, mes_actividad)
-)
-COMMENT 'Matriz mensual de retención de cohortes de usuarios (CRR). Stakeholder: Producto (Andrew Collins — REQ-04).'
-TBLPROPERTIES (delta.enableChangeDataFeed = true)
-""")
-
-spark.sql("""
-INSERT OVERWRITE workspace.yelp_gold.gld_cohortes_retencion_mensual
-WITH base_cohortes AS (
+chk AS (SELECT business_key, period_month, count(*) AS checkin_count FROM v_checkin GROUP BY 1, 2),
+tip AS (SELECT business_key, period_month, count(*) AS tip_count FROM v_tip GROUP BY 1, 2),
+meses AS (
+  SELECT business_key, period_month FROM rev UNION
+  SELECT business_key, period_month FROM chk UNION
+  SELECT business_key, period_month FROM tip
+),
+base AS (
   SELECT
-    to_date(date_trunc('month', yelping_since)) AS cohorte_mes,
-    count(DISTINCT user_id)                     AS tamano_cohorte
-  FROM workspace.yelp_silver.slv_user
-  GROUP BY 1
+    m.business_key, m.period_month,
+    coalesce(r.review_count, 0)          AS review_count,
+    r.avg_review_stars,
+    coalesce(r.review_author_count, 0)   AS review_author_count,
+    coalesce(c.checkin_count, 0)         AS checkin_count,
+    coalesce(t.tip_count, 0)             AS tip_count,
+    coalesce(r.valid_review_count, 0)    AS valid_review_count,
+    r.valid_rating, r.valid_useful, r.valid_negative, r.invalid_count,
+    max(r.last_valid_in_month) OVER (PARTITION BY m.business_key ORDER BY m.period_month
+                                     ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS last_valid_review
+  FROM meses m
+  LEFT JOIN rev r ON m.business_key = r.business_key AND m.period_month = r.period_month
+  LEFT JOIN chk c ON m.business_key = c.business_key AND m.period_month = c.period_month
+  LEFT JOIN tip t ON m.business_key = t.business_key AND m.period_month = t.period_month
+)
+SELECT
+  b.business_key,
+  b.period_month,
+  b.review_count,
+  round(b.avg_review_stars, 2)                                                AS avg_review_stars,
+  b.review_author_count,
+  b.checkin_count,
+  b.tip_count,
+  b.review_count + b.checkin_count + b.tip_count                              AS interaction_count,
+  b.valid_review_count,
+  round(b.valid_rating, 2)                                                    AS valid_rating,
+  round(b.valid_useful / nullif(b.valid_review_count, 0), 4)                  AS useful_review_rate,
+  datediff(last_day(to_date(CAST(b.period_month AS STRING), 'yyyyMM')), b.last_valid_review) AS days_since_last_review,
+  round(d.declared_stars - b.valid_rating, 2)                                 AS rating_gap,
+  round(b.valid_negative / nullif(b.valid_review_count, 0), 4)                AS negative_review_rate,
+  round(b.invalid_count / nullif(b.review_count, 0), 4)                       AS invalid_content_rate,
+  current_timestamp()                                                         AS calculated_at
+FROM base b
+JOIN workspace.yelp_gold.gld_dim_business d ON b.business_key = d.business_key
+""", "workspace.yelp_gold.gld_agg_business_month")
+
+cargar("""
+WITH chk AS (SELECT business_key, week_start, count(*) AS checkin_count FROM v_checkin GROUP BY 1, 2),
+     tip AS (SELECT business_key, week_start, count(*) AS tip_count FROM v_tip GROUP BY 1, 2)
+SELECT
+  coalesce(c.business_key, t.business_key) AS business_key,
+  coalesce(c.week_start, t.week_start)     AS week_start,
+  coalesce(c.checkin_count, 0)             AS checkin_count,
+  coalesce(t.tip_count, 0)                 AS tip_count
+FROM chk c FULL OUTER JOIN tip t ON c.business_key = t.business_key AND c.week_start = t.week_start
+""", "workspace.yelp_gold.gld_agg_business_week")
+
+cargar("""
+WITH prim AS (
+  SELECT business_key, category_key FROM workspace.yelp_gold.gld_bridge_business_category WHERE is_primary
 ),
+negocios AS (SELECT category_key, count(*) AS business_count FROM prim GROUP BY category_key),
+rev AS (
+  SELECT p.category_key, r.period_month,
+         count(*)                                 AS review_count,
+         avg(r.stars)                             AS avg_review_stars,
+         avg(CASE WHEN r.is_valid THEN r.stars END) AS valid_rating,
+         count_if(r.is_valid AND r.stars <= 2)    AS negative_review_count
+  FROM v_review r JOIN prim p ON r.business_key = p.business_key
+  GROUP BY p.category_key, r.period_month
+),
+chk AS (
+  SELECT p.category_key, c.period_month, count(*) AS checkin_count
+  FROM v_checkin c JOIN prim p ON c.business_key = p.business_key
+  GROUP BY p.category_key, c.period_month
+),
+meses AS (SELECT category_key, period_month FROM rev UNION SELECT category_key, period_month FROM chk)
+SELECT
+  m.category_key,
+  m.period_month,
+  n.business_count,
+  coalesce(r.review_count, 0)          AS review_count,
+  coalesce(c.checkin_count, 0)         AS checkin_count,
+  round(r.avg_review_stars, 2)         AS avg_review_stars,
+  round(r.valid_rating, 2)             AS valid_rating,
+  coalesce(r.negative_review_count, 0) AS negative_review_count
+FROM meses m
+JOIN negocios n ON m.category_key = n.category_key
+LEFT JOIN rev r ON m.category_key = r.category_key AND m.period_month = r.period_month
+LEFT JOIN chk c ON m.category_key = c.category_key AND m.period_month = c.period_month
+""", "workspace.yelp_gold.gld_agg_category_month")
+
+cargar("""
+WITH rev AS (SELECT user_key, period_month, count(*) AS review_count FROM v_review GROUP BY 1, 2),
+     tip AS (SELECT user_key, period_month, count(*) AS tip_count FROM v_tip GROUP BY 1, 2)
+SELECT
+  coalesce(r.user_key, t.user_key)             AS user_key,
+  coalesce(r.period_month, t.period_month)     AS period_month,
+  coalesce(r.review_count, 0)                  AS review_count,
+  coalesce(t.tip_count, 0)                     AS tip_count,
+  coalesce(r.review_count, 0) + coalesce(t.tip_count, 0)     AS contribution_count,
+  coalesce(r.review_count, 0) + coalesce(t.tip_count, 0) > 0 AS is_contributor
+FROM rev r FULL OUTER JOIN tip t ON r.user_key = t.user_key AND r.period_month = t.period_month
+""", "workspace.yelp_gold.gld_agg_user_month")
+
+# COMMAND ----------
+
+# DBTITLE 1,5. Agregados de KPIs por stakeholder (ranking bayesiano, check-ins diarios, salud de reseñas, cohortes)
+# Calificación bayesiana con m = 25 reseñas y el promedio válido de la ciudad como referencia.
+cargar("""
+WITH validas AS (
+  SELECT r.business_key, r.period_month, r.stars, r.user_key, d.city
+  FROM v_review r JOIN workspace.yelp_gold.gld_dim_business d ON r.business_key = d.business_key
+  WHERE r.is_valid
+),
+ciudad AS (SELECT city, avg(stars) AS c FROM validas GROUP BY city),
+mes AS (
+  SELECT business_key, city, period_month,
+         count(*) AS n, avg(stars) AS r, count(DISTINCT user_key) AS autores
+  FROM validas GROUP BY business_key, city, period_month
+)
+SELECT
+  m.business_key,
+  m.period_month,
+  m.n                                                         AS valid_review_count,
+  round(m.r, 2)                                               AS valid_rating,
+  round((m.n * m.r + 25.0 * coalesce(c.c, m.r)) / (m.n + 25.0), 2) AS bayesian_rating,
+  m.autores                                                   AS review_author_count
+FROM mes m LEFT JOIN ciudad c ON m.city <=> c.city
+""", "workspace.yelp_gold.gld_agg_business_bayesian_month")
+
+cargar("""
+SELECT
+  business_key,
+  date_key,
+  count(*)                      AS checkin_count,
+  count(DISTINCT checkin_hour)  AS active_hour_count
+FROM v_checkin
+GROUP BY business_key, date_key
+""", "workspace.yelp_gold.gld_agg_business_checkin_day")
+
+cargar("""
+WITH rev AS (
+  SELECT period_month, count_if(is_valid) AS valid_review_count, count_if(NOT is_valid) AS invalid_review_count
+  FROM v_review GROUP BY period_month
+),
+cua AS (
+  SELECT CAST(date_format(coalesce(review_date, CAST(rejected_at AS DATE)), 'yyyyMM') AS INT) AS period_month,
+         count(*) AS quarantined_review_count
+  FROM workspace.yelp_silver.slv_review_quarantine GROUP BY 1
+)
+SELECT
+  coalesce(r.period_month, q.period_month)        AS period_month,
+  coalesce(r.valid_review_count, 0)               AS valid_review_count,
+  coalesce(r.invalid_review_count, 0)             AS invalid_review_count,
+  coalesce(q.quarantined_review_count, 0)         AS quarantined_review_count,
+  round(coalesce(q.quarantined_review_count, 0) /
+        nullif(coalesce(r.valid_review_count, 0) + coalesce(r.invalid_review_count, 0) + coalesce(q.quarantined_review_count, 0), 0), 4)
+                                                  AS quarantine_rate
+FROM rev r FULL OUTER JOIN cua q ON r.period_month = q.period_month
+WHERE coalesce(r.period_month, q.period_month) IS NOT NULL
+""", "workspace.yelp_gold.gld_agg_review_health_month")
+
+cargar("""
+WITH usuarios AS (
+  SELECT user_key, trunc(yelping_since, 'MM') AS cohort_start
+  FROM workspace.yelp_gold.gld_dim_user WHERE yelping_since IS NOT NULL
+),
+tamano AS (SELECT cohort_start, count(*) AS cohort_size FROM usuarios GROUP BY cohort_start),
 actividad AS (
-  SELECT
-    to_date(date_trunc('month', u.yelping_since)) AS cohorte_mes,
-    to_date(date_trunc('month', r.fecha_resena))  AS mes_actividad,
-    count(DISTINCT r.user_id)                     AS usuarios_activos
-  FROM workspace.yelp_silver.slv_review r
-  JOIN workspace.yelp_silver.slv_user u USING (user_id)
-  WHERE r.fecha_resena >= u.yelping_since
+  SELECT u.cohort_start, trunc(r.full_date, 'MM') AS activity_start, count(DISTINCT r.user_key) AS active_user_count
+  FROM v_review r JOIN usuarios u ON r.user_key = u.user_key
+  WHERE r.is_valid AND trunc(r.full_date, 'MM') >= u.cohort_start
   GROUP BY 1, 2
 )
 SELECT
-  a.cohorte_mes,
-  a.mes_actividad,
-  a.usuarios_activos,
-  round(100.0 * a.usuarios_activos / greatest(b.tamano_cohorte, 1), 2) AS retencion_pct
-FROM actividad a
-JOIN base_cohortes b USING (cohorte_mes)
-""")
-registrar_bitacora("gold", "workspace.yelp_gold.gld_cohortes_retencion_mensual",
-                   spark.table("workspace.yelp_gold.gld_cohortes_retencion_mensual").count(), t0_coh)
+  CAST(date_format(a.cohort_start, 'yyyyMM') AS INT)    AS cohort_month,
+  CAST(date_format(a.activity_start, 'yyyyMM') AS INT)  AS activity_month,
+  CAST(months_between(a.activity_start, a.cohort_start) AS INT) AS months_since_join,
+  t.cohort_size,
+  a.active_user_count,
+  round(a.active_user_count / t.cohort_size, 4)         AS retention_rate
+FROM actividad a JOIN tamano t ON a.cohort_start = t.cohort_start
+""", "workspace.yelp_gold.gld_agg_user_cohort_month")
 
 # COMMAND ----------
 
-# DBTITLE 1,Validación — cada tabla gold tiene consumidor declarado y 100% de columnas con COMMENT
-tablas_gold = [r.tableName for r in spark.sql("SHOW TABLES IN workspace.yelp_gold").collect()]
-assert len(tablas_gold) >= 5, f"Se esperan ≥5 objetos gold (hay {len(tablas_gold)})"
+# DBTITLE 1,Validación — integridad de claves y 100% de columnas con COMMENT
+huerfanos = spark.sql("""
+SELECT
+  (SELECT count(*) FROM workspace.yelp_gold.gld_fact_review f LEFT ANTI JOIN workspace.yelp_gold.gld_dim_business d USING (business_key)) AS review_sin_negocio,
+  (SELECT count(*) FROM workspace.yelp_gold.gld_fact_review f LEFT ANTI JOIN workspace.yelp_gold.gld_dim_user u USING (user_key))      AS review_sin_usuario,
+  (SELECT count(*) FROM workspace.yelp_gold.gld_fact_review f LEFT ANTI JOIN workspace.yelp_gold.gld_dim_date d USING (date_key))      AS review_sin_fecha,
+  (SELECT count(*) FROM workspace.yelp_gold.gld_fact_checkin f LEFT ANTI JOIN workspace.yelp_gold.gld_dim_business d USING (business_key)) AS checkin_sin_negocio,
+  (SELECT count(*) FROM workspace.yelp_gold.gld_fact_tip f LEFT ANTI JOIN workspace.yelp_gold.gld_dim_user u USING (user_key))         AS tip_sin_usuario
+""").first().asDict()
+assert all(v == 0 for v in huerfanos.values()), f"❌ Hechos sin dimensión: {huerfanos}"
 
 sin_comment_gold = spark.sql("""
   SELECT table_name, column_name
   FROM workspace.information_schema.columns
-  WHERE table_schema = 'yelp_gold' AND (comment IS NULL OR comment = '')
+  WHERE table_schema = 'yelp_gold' AND table_name LIKE 'gld\\_%' AND (comment IS NULL OR comment = '')
 """).collect()
-assert not sin_comment_gold, f"❌ Columnas gold sin COMMENT: {sin_comment_gold}"
+assert not sin_comment_gold, f"❌ Columnas gold sin COMMENT: {[(r.table_name, r.column_name) for r in sin_comment_gold]}"
 
-print(f"✔ Capa gold validada ({len(tablas_gold)} tablas):", sorted(tablas_gold))
+tablas_gold = sorted(r.tableName for r in spark.sql("SHOW TABLES IN workspace.yelp_gold").collect() if r.tableName.startswith("gld_"))
+print(f"✔ Capa gold validada ({len(tablas_gold)} tablas): {tablas_gold}")
 
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC ### Definition of Done (E7.3)
-# MAGIC - [x] ≥2 tablas de KPIs (`gld_kpi_negocio_mensual`, `gld_checkins_diarios`, `gld_salud_resenas`, `gld_cohortes_retencion_mensual`) + esquema estrella completo (3 dimensiones: `gld_dim_negocio`, `gld_dim_usuario`, `gld_dim_tiempo` + 1 tabla de hechos: `gld_fact_resenas`).
-# MAGIC - [x] Tabla stakeholder → producto → pregunta completa en el markdown superior.
-# MAGIC - [x] 100% de tablas y columnas de `yelp_gold` con `COMMENT`, `PRIMARY KEY` y `FOREIGN KEY` activando el lineage automático en Catalog Explorer.
+# MAGIC - [x] Modelo estrella completo según `yelp_gold.txt`: 4 dimensiones, 1 puente, 3 hechos y 4 agregados.
+# MAGIC - [x] 4 agregados de KPIs por stakeholder: `gld_agg_business_bayesian_month`, `gld_agg_business_checkin_day`, `gld_agg_review_health_month`, `gld_agg_user_cohort_month`.
+# MAGIC - [x] Hechos sin claves huérfanas y 100% de columnas con `COMMENT`, `PRIMARY KEY` y `FOREIGN KEY`.

@@ -1,325 +1,482 @@
 # Databricks notebook source
 # MAGIC %md
 # MAGIC # E3 · Modelo Físico — DDL sobre Delta Lake / Unity Catalog (Grupo 03 · Data Evolution)
-# MAGIC **Cierra con:** M4 Modelado Avanzado · Se implementa en `yelp_silver` (conformado 3FN) y `yelp_gold` (dimensional Kimball).
+# MAGIC **Cierra con:** M4 Modelado Avanzado · Se implementa en `yelp_silver` (modelo lógico normalizado) y `yelp_gold` (modelo dimensional).
+# MAGIC
+# MAGIC Este notebook es la **única fuente del DDL** de Silver y Gold. Reproduce los scripts `yelp_silver.txt` y `yelp_gold.txt` y el diagrama `yelp_modelo_logico.drawio` (carpeta `02-Modelado`).
+# MAGIC Los notebooks del pipeline (`E7_pipeline_lakehouse`) lo ejecutan al inicio y luego solo cargan datos, sin redefinir tablas.
 # MAGIC
 # MAGIC Reglas del entregable:
-# MAGIC 1. **Toda tabla y toda columna llevan `COMMENT`** — ese metadata alimenta E4 (diccionario) automáticamente.
-# MAGIC 2. Declarar constraints informativas de UC: `PRIMARY KEY` / `FOREIGN KEY` (no se
-# MAGIC    enforcan, pero documentan el modelo, habilitan optimizaciones Catalyst y dibujan el lineage en Catalog Explorer).
-# MAGIC 3. Constraints sí enforzadas donde aplique: `NOT NULL` y `CHECK`.
-# MAGIC 4. Habilitar `delta.enableChangeDataFeed = true` para auditoría histórica Time Travel (**ADR-04**).
+# MAGIC 1. **Nomenclatura en inglés:** snake_case, prefijo de capa (`slv_`, `gld_dim_`, `gld_fact_`, `gld_bridge_`, `gld_agg_`), tablas en singular, `<entidad>_id` en Silver y `<entidad>_key` en Gold, booleanos `is_*`, contadores `*_count`.
+# MAGIC 2. **Toda tabla y toda columna llevan `COMMENT`** en español (lenguaje del glosario de negocio); ese metadata alimenta E4.
+# MAGIC 3. Constraints informativas de Unity Catalog: `PRIMARY KEY` / `FOREIGN KEY`. Constraints enforzadas: `NOT NULL` y `CHECK`.
+# MAGIC 4. `delta.enableChangeDataFeed = true` en todas las tablas para auditoría histórica.
 # MAGIC
-# MAGIC > **Trazabilidad —** este entregable **implementa** la **Sección 4 («Modelo de Datos Conceptual y Lógico»)** y las decisiones **ADR-01 a ADR-07** del
-# MAGIC > **Documento Formal de Arquitectura de Datos (v1.2 · Equipo Data Evolution)**:
-# MAGIC > - **Capa Silver (`workspace.yelp_silver`):** 7 tablas (`slv_business`, `slv_user`, `slv_amistad`, `slv_review`, `slv_review_cuarentena`, `slv_tip`, `slv_checkin`). En `slv_business`, los objetos anidados dispersos `attributes` (39 subcampos con >65% de nulidad y literales Python 2) y `hours` se retienen en `brz_business` (*Schema-on-Read*) y no se promueven a Silver conforme a **ADR-07 / Acta 05**.
-# MAGIC > - **Capa Gold (`workspace.yelp_gold`):** Esquema estrella Kimball (`gld_dim_negocio`, `gld_dim_usuario`, `gld_dim_tiempo`, `gld_fact_resenas`) + productos agregados (`gld_kpi_negocio_mensual`, `gld_checkins_diarios`, `gld_salud_resenas`, `gld_cohortes_retencion_mensual`).
+# MAGIC **Silver (`workspace.yelp_silver`, 10 tablas):** `slv_business`, `slv_user`, `slv_review`, `slv_review_quarantine`, `slv_category`, `slv_business_category`, `slv_checkin`, `slv_tip`, `slv_photo`, `slv_friendship`.
+# MAGIC
+# MAGIC **Gold (`workspace.yelp_gold`, 16 tablas):** dimensiones `gld_dim_date`, `gld_dim_business`, `gld_dim_user`, `gld_dim_category`; puente `gld_bridge_business_category`; hechos `gld_fact_review`, `gld_fact_checkin`, `gld_fact_tip`; agregados `gld_agg_business_month`, `gld_agg_business_week`, `gld_agg_category_month`, `gld_agg_user_month`, `gld_agg_business_bayesian_month`, `gld_agg_business_checkin_day`, `gld_agg_review_health_month`, `gld_agg_user_cohort_month`.
 
 # COMMAND ----------
 
-# DBTITLE 1,Asegurar existencia de los schemas Silver y Gold en Unity Catalog
-spark.sql("CREATE SCHEMA IF NOT EXISTS workspace.yelp_silver COMMENT 'Capa Silver: datos limpios, conformados en 3FN y con calidad validada — Grupo 03'")
-spark.sql("CREATE SCHEMA IF NOT EXISTS workspace.yelp_gold COMMENT 'Capa Gold: modelo dimensional Kimball y productos de datos certificados — Grupo 03'")
+# DBTITLE 1,Esquemas Silver y Gold
+spark.sql("CREATE SCHEMA IF NOT EXISTS workspace.yelp_silver COMMENT 'Capa Silver: modelo lógico normalizado, datos limpios y con calidad validada — Grupo 03'")
+spark.sql("CREATE SCHEMA IF NOT EXISTS workspace.yelp_gold COMMENT 'Capa Gold: modelo dimensional y productos de datos certificados — Grupo 03'")
 
 # COMMAND ----------
 
-# DBTITLE 1,1. Entidad Silver — slv_business (Negocios locales + ADR-03 ARRAY<STRING>)
+# DBTITLE 1,1. Silver — negocios, categorías y usuarios
 # MAGIC %sql
-# MAGIC -- ======================= 1.1 ENTIDAD SILVER: slv_business =======================
 # MAGIC CREATE TABLE IF NOT EXISTS workspace.yelp_silver.slv_business (
-# MAGIC   business_id   STRING        NOT NULL COMMENT 'Identificador único del negocio en YelpConnect (clave natural de 22 caracteres)',
-# MAGIC   nombre        STRING        NOT NULL COMMENT 'Razón comercial o nombre público del establecimiento',
-# MAGIC   ciudad        STRING        NOT NULL COMMENT 'Ciudad normalizada (title case, sin espacios extremos)',
-# MAGIC   estado        STRING                 COMMENT 'Código de estado o provincia de dos letras en mayúsculas',
-# MAGIC   latitud       DOUBLE                 COMMENT 'Coordenada de latitud geográfica (-90 a +90 grados)',
-# MAGIC   longitud      DOUBLE                 COMMENT 'Coordenada de longitud geográfica (-180 a +180 grados)',
-# MAGIC   estrellas     DOUBLE                 COMMENT 'Rating promedio publicado en la ficha del negocio (escala 1.0 a 5.0)',
-# MAGIC   n_resenas     INT                    COMMENT 'Cantidad histórica acumulada de reseñas asociadas al negocio',
-# MAGIC   esta_abierto  BOOLEAN                COMMENT 'TRUE si el negocio sigue operativo y abierto al público',
-# MAGIC   categorias    ARRAY<STRING>          COMMENT 'Categorías comerciales deserializadas como arreglo nativo Delta según ADR-03',
-# MAGIC   fecha_carga   TIMESTAMP     NOT NULL COMMENT 'Timestamp de procesamiento del pipeline en Silver (auditoría técnica)',
+# MAGIC   business_id         STRING        NOT NULL COMMENT 'Identificador único del negocio asignado por Yelp',
+# MAGIC   master_business_id  STRING        NOT NULL COMMENT 'Negocio maestro (golden record): business_id del registro sobreviviente entre los que representan el mismo negocio físico. Es el mismo business_id si el negocio no tiene duplicados',
+# MAGIC   name                STRING        NOT NULL COMMENT 'Nombre comercial del negocio',
+# MAGIC   address             STRING                 COMMENT 'Dirección postal del negocio',
+# MAGIC   city                STRING                 COMMENT 'Ciudad donde se ubica el negocio',
+# MAGIC   state               STRING                 COMMENT 'Estado donde se ubica el negocio (código de 2 letras)',
+# MAGIC   postal_code         STRING                 COMMENT 'Código postal del negocio',
+# MAGIC   latitude            DECIMAL(9,6)           COMMENT 'Latitud geográfica del negocio',
+# MAGIC   longitude           DECIMAL(9,6)           COMMENT 'Longitud geográfica del negocio',
+# MAGIC   stars               DECIMAL(2,1)           COMMENT 'Calificación promedio declarada por Yelp, de 1 a 5 en pasos de media estrella',
+# MAGIC   review_count        INT                    COMMENT 'Cantidad total de reseñas declarada por Yelp para el negocio',
+# MAGIC   is_open             BOOLEAN                COMMENT 'Indica si el negocio sigue abierto (true) o cerró (false)',
+# MAGIC   loaded_at           TIMESTAMP     NOT NULL COMMENT 'Momento en que la fila se cargó desde Bronze',
+# MAGIC   source_file         STRING                 COMMENT 'Archivo de Bronze del que proviene la fila',
 # MAGIC   CONSTRAINT pk_slv_business PRIMARY KEY (business_id)
 # MAGIC )
-# MAGIC COMMENT 'Negocios locales registrados en YelpConnect — capa conformada 3FN. Data Owner: Producto (Andrew Collins).'
+# MAGIC COMMENT 'Maestro de negocios de Philadelphia, tomado del Yelp Open Dataset. Una fila por negocio.'
 # MAGIC TBLPROPERTIES (delta.enableChangeDataFeed = true);
-
-# COMMAND ----------
-
-# MAGIC %sql
-# MAGIC -- Constraint CHECK idempotente sobre slv_business (escala válida 1.0 a 5.0)
-# MAGIC ALTER TABLE workspace.yelp_silver.slv_business DROP CONSTRAINT IF EXISTS chk_slv_business_estrellas;
-# MAGIC ALTER TABLE workspace.yelp_silver.slv_business ADD CONSTRAINT chk_slv_business_estrellas CHECK (estrellas IS NULL OR (estrellas >= 1.0 AND estrellas <= 5.0));
-
-# COMMAND ----------
-
-# DBTITLE 1,2. Entidades Silver — slv_user (Usuarios con PII) y slv_amistad (Grafo Social v1.2)
-# MAGIC %sql
-# MAGIC -- ======================= 1.2 ENTIDAD SILVER: slv_user =======================
-# MAGIC -- Nota de Gobierno (E6 / ADR-06): La columna 'name' contiene PII directa y se protege
-# MAGIC -- con tag clasificacion='restringido' y Dynamic Column Masking para analistas.
+# MAGIC
+# MAGIC CREATE TABLE IF NOT EXISTS workspace.yelp_silver.slv_category (
+# MAGIC   category_id  BIGINT     NOT NULL COMMENT 'Identificador único de la categoría, generado en el proceso de carga',
+# MAGIC   name         STRING     NOT NULL COMMENT 'Nombre de la categoría tal como aparece en Yelp',
+# MAGIC   loaded_at    TIMESTAMP  NOT NULL COMMENT 'Momento en que la fila se cargó desde Bronze',
+# MAGIC   source_file  STRING              COMMENT 'Archivo de Bronze del que proviene la fila',
+# MAGIC   CONSTRAINT pk_slv_category PRIMARY KEY (category_id)
+# MAGIC )
+# MAGIC COMMENT 'Catálogo de categorías de negocio de Yelp (por ejemplo, restaurantes o salones de belleza). Una fila por categoría.'
+# MAGIC TBLPROPERTIES (delta.enableChangeDataFeed = true);
+# MAGIC
+# MAGIC CREATE TABLE IF NOT EXISTS workspace.yelp_silver.slv_business_category (
+# MAGIC   business_id  STRING     NOT NULL COMMENT 'Negocio asociado a la categoría',
+# MAGIC   category_id  BIGINT     NOT NULL COMMENT 'Categoría asignada al negocio',
+# MAGIC   loaded_at    TIMESTAMP  NOT NULL COMMENT 'Momento en que la fila se cargó desde Bronze',
+# MAGIC   source_file  STRING              COMMENT 'Archivo de Bronze del que proviene la fila',
+# MAGIC   CONSTRAINT pk_slv_business_category PRIMARY KEY (business_id, category_id)
+# MAGIC )
+# MAGIC COMMENT 'Tabla puente que asocia cada negocio con sus categorías. Una fila por par negocio-categoría.'
+# MAGIC TBLPROPERTIES (delta.enableChangeDataFeed = true);
+# MAGIC
+# MAGIC -- slv_user.name es PII directa: se protege con tag y COLUMN MASK en E6.
 # MAGIC CREATE TABLE IF NOT EXISTS workspace.yelp_silver.slv_user (
-# MAGIC   user_id        STRING    NOT NULL COMMENT 'Identificador único seudonimizado del usuario registrado en YelpConnect',
-# MAGIC   name           STRING    NOT NULL COMMENT 'Nombre de pila del usuario (Dato Personal PII sujeto a enmascaramiento dinámico ADR-06)',
-# MAGIC   review_count   INT                COMMENT 'Cantidad total acumulada de reseñas escritas por el usuario',
-# MAGIC   yelping_since  TIMESTAMP NOT NULL COMMENT 'Fecha y hora de alta original del usuario en la plataforma YelpConnect',
-# MAGIC   useful         INT                COMMENT 'Total histórico de votos Useful asociados al perfil del usuario',
-# MAGIC   funny          INT                COMMENT 'Total histórico de votos Funny asociados al perfil del usuario',
-# MAGIC   cool           INT                COMMENT 'Total histórico de votos Cool asociados al perfil del usuario',
-# MAGIC   fans           INT                COMMENT 'Número de seguidores activos (fans) del usuario en la comunidad',
-# MAGIC   elite          STRING             COMMENT 'Años en los que el usuario fue certificado como miembro de la comunidad Élite',
-# MAGIC   average_stars  DOUBLE             COMMENT 'Calificación promedio histórica otorgada por el usuario en sus reseñas (1.0 a 5.0)',
-# MAGIC   fecha_carga    TIMESTAMP NOT NULL COMMENT 'Timestamp de procesamiento y carga en la capa Silver (auditoría)',
+# MAGIC   user_id           STRING        NOT NULL COMMENT 'Identificador único del usuario asignado por Yelp',
+# MAGIC   name              STRING        NOT NULL COMMENT 'Nombre de pila del usuario (dato personal, enmascarado en E6)',
+# MAGIC   review_count      INT                    COMMENT 'Cantidad total de reseñas escritas por el usuario',
+# MAGIC   yelping_since     DATE                   COMMENT 'Fecha en que el usuario se unió a Yelp',
+# MAGIC   fans              INT                    COMMENT 'Cantidad de seguidores (fans) del usuario',
+# MAGIC   average_stars     DECIMAL(3,2)           COMMENT 'Calificación promedio que el usuario da en sus reseñas',
+# MAGIC   elite_year_count  INT                    COMMENT 'Cantidad de años en que Yelp reconoció al usuario como Elite (0 si nunca lo fue)',
+# MAGIC   useful_sent       INT                    COMMENT 'Votos "útil" que el usuario ha dado a reseñas de otros',
+# MAGIC   funny_sent        INT                    COMMENT 'Votos "divertido" que el usuario ha dado a reseñas de otros',
+# MAGIC   cool_sent         INT                    COMMENT 'Votos "genial" que el usuario ha dado a reseñas de otros',
+# MAGIC   loaded_at         TIMESTAMP     NOT NULL COMMENT 'Momento en que la fila se cargó desde Bronze',
+# MAGIC   source_file       STRING                 COMMENT 'Archivo de Bronze del que proviene la fila',
 # MAGIC   CONSTRAINT pk_slv_user PRIMARY KEY (user_id)
 # MAGIC )
-# MAGIC COMMENT 'Usuarios registrados en YelpConnect — capa conformada 3FN. Data Owner: Trust & Safety (Rafael Nakamura).'
+# MAGIC COMMENT 'Maestro de usuarios de Yelp que escribieron reseñas o tips en la muestra de Philadelphia. Una fila por usuario.'
 # MAGIC TBLPROPERTIES (delta.enableChangeDataFeed = true);
 # MAGIC
-# MAGIC -- ======================= 1.3 ENTIDAD SILVER: slv_amistad (Grafo Social) =======================
-# MAGIC CREATE TABLE IF NOT EXISTS workspace.yelp_silver.slv_amistad (
-# MAGIC   user_id_1    STRING    NOT NULL COMMENT 'Identificador del usuario titular dentro del vínculo de amistad en la red social',
-# MAGIC   user_id_2    STRING    NOT NULL COMMENT 'Identificador del usuario amigo vinculado en el grafo social de YelpConnect',
-# MAGIC   fecha_carga  TIMESTAMP NOT NULL COMMENT 'Timestamp de procesamiento del grafo social en Silver (auditoría)',
-# MAGIC   CONSTRAINT pk_slv_amistad PRIMARY KEY (user_id_1, user_id_2),
-# MAGIC   CONSTRAINT fk_amistad_user1 FOREIGN KEY (user_id_1) REFERENCES workspace.yelp_silver.slv_user(user_id)
+# MAGIC CREATE TABLE IF NOT EXISTS workspace.yelp_silver.slv_friendship (
+# MAGIC   user_id_1    STRING     NOT NULL COMMENT 'Usuario de la amistad con el identificador menor',
+# MAGIC   user_id_2    STRING     NOT NULL COMMENT 'Usuario de la amistad con el identificador mayor',
+# MAGIC   loaded_at    TIMESTAMP  NOT NULL COMMENT 'Momento en que la fila se cargó desde Bronze',
+# MAGIC   source_file  STRING              COMMENT 'Archivo de Bronze del que proviene la fila',
+# MAGIC   CONSTRAINT pk_slv_friendship PRIMARY KEY (user_id_1, user_id_2)
 # MAGIC )
-# MAGIC COMMENT 'Relación N:M del grafo social de amistad entre usuarios (v1.2 Hackolade). Data Owner: Trust & Safety (Rafael Nakamura).'
+# MAGIC COMMENT 'Tabla puente que registra las amistades entre usuarios. Una fila por amistad (el par se guarda una sola vez, con user_id_1 < user_id_2).'
 # MAGIC TBLPROPERTIES (delta.enableChangeDataFeed = true);
 
 # COMMAND ----------
 
-# DBTITLE 1,3. Entidades Silver — slv_review (Reseñas Verificadas) y slv_review_cuarentena (Aislamiento DQ)
+# DBTITLE 1,2. Silver — reseñas, cuarentena, tips, check-ins y fotos
 # MAGIC %sql
-# MAGIC -- ======================= 1.4 ENTIDAD SILVER: slv_review =======================
-# MAGIC -- Tratamiento de 'text' (PII indirecta): el comentario libre puede contener nombres o datos de terceros;
-# MAGIC -- se clasifica como Confidencial en E4/E6 y en Gold solo se exponen métricas agregadas o longitud (text_len).
+# MAGIC -- slv_review.text puede contener datos de terceros (PII indirecta): en Gold no se publica el texto.
 # MAGIC CREATE TABLE IF NOT EXISTS workspace.yelp_silver.slv_review (
-# MAGIC   review_id     STRING    NOT NULL COMMENT 'Identificador único global de la reseña emitida en YelpConnect',
-# MAGIC   user_id       STRING    NOT NULL COMMENT 'Identificador del usuario autor de la reseña (FK hacia slv_user)',
-# MAGIC   business_id   STRING    NOT NULL COMMENT 'Identificador del negocio evaluado en la reseña (FK hacia slv_business)',
-# MAGIC   stars         INT       NOT NULL COMMENT 'Calificación numérica en estrellas otorgada al negocio (escala entera 1 a 5)',
-# MAGIC   useful        INT                COMMENT 'Conteo de votos Useful recibidos por la reseña de parte de la comunidad',
-# MAGIC   funny         INT                COMMENT 'Conteo de votos Funny recibidos por la reseña',
-# MAGIC   cool          INT                COMMENT 'Conteo de votos Cool recibidos por la reseña',
-# MAGIC   text          STRING    NOT NULL COMMENT 'Texto argumentativo de la reseña (PII indirecta clasificada como Confidencial)',
-# MAGIC   fecha_resena  TIMESTAMP NOT NULL COMMENT 'Fecha y hora exacta de publicación de la reseña convertida a TIMESTAMP',
-# MAGIC   fecha_carga   TIMESTAMP NOT NULL COMMENT 'Timestamp de procesamiento y validación en la capa Silver (auditoría)',
-# MAGIC   CONSTRAINT pk_slv_review PRIMARY KEY (review_id),
-# MAGIC   CONSTRAINT fk_review_business FOREIGN KEY (business_id) REFERENCES workspace.yelp_silver.slv_business(business_id),
-# MAGIC   CONSTRAINT fk_review_user FOREIGN KEY (user_id) REFERENCES workspace.yelp_silver.slv_user(user_id)
+# MAGIC   review_id    STRING     NOT NULL COMMENT 'Identificador único de la reseña asignado por Yelp',
+# MAGIC   user_id      STRING     NOT NULL COMMENT 'Usuario que escribió la reseña',
+# MAGIC   business_id  STRING     NOT NULL COMMENT 'Negocio sobre el que trata la reseña',
+# MAGIC   stars        INT        NOT NULL COMMENT 'Calificación dada en la reseña, de 1 a 5 estrellas',
+# MAGIC   review_date  DATE       NOT NULL COMMENT 'Fecha en que se publicó la reseña',
+# MAGIC   text         STRING              COMMENT 'Texto completo de la reseña',
+# MAGIC   useful       INT                 COMMENT 'Votos "útil" recibidos por la reseña',
+# MAGIC   funny        INT                 COMMENT 'Votos "divertido" recibidos por la reseña',
+# MAGIC   cool         INT                 COMMENT 'Votos "genial" recibidos por la reseña',
+# MAGIC   loaded_at    TIMESTAMP  NOT NULL COMMENT 'Momento en que la fila se cargó desde Bronze',
+# MAGIC   source_file  STRING              COMMENT 'Archivo de Bronze del que proviene la fila',
+# MAGIC   CONSTRAINT pk_slv_review PRIMARY KEY (review_id)
 # MAGIC )
-# MAGIC COMMENT 'Reseñas verificadas y deduplicadas que superaron el Quality Gate en Silver. Data Owner: Producto (Andrew Collins).'
+# MAGIC COMMENT 'Reseñas escritas por usuarios sobre negocios de Philadelphia. Una fila por reseña.'
 # MAGIC TBLPROPERTIES (delta.enableChangeDataFeed = true);
 # MAGIC
-# MAGIC -- ======================= 1.5 ENTIDAD SILVER: slv_review_cuarentena =======================
-# MAGIC CREATE TABLE IF NOT EXISTS workspace.yelp_silver.slv_review_cuarentena (
-# MAGIC   review_id       STRING             COMMENT 'Identificador de la reseña aislada preventivamente en cuarentena',
-# MAGIC   user_id         STRING             COMMENT 'Identificador del usuario reportado en el registro no conforme',
-# MAGIC   business_id     STRING             COMMENT 'Identificador del negocio reportado en el registro no conforme',
-# MAGIC   stars           INT                COMMENT 'Calificación original del registro aislado en cuarentena',
-# MAGIC   text            STRING             COMMENT 'Texto original de la reseña retenida para auditoría forense de Trust & Safety',
-# MAGIC   fecha_resena    TIMESTAMP          COMMENT 'Fecha original reportada en la reseña aislada',
-# MAGIC   motivo_rechazo  STRING    NOT NULL COMMENT 'Regla DQ o causa de rechazo (FK_INVALIDA, STARS_FUERA_RANGO, DUPLICADO_LOGICO, TEXTO_VACIO)',
-# MAGIC   fecha_rechazo   TIMESTAMP NOT NULL COMMENT 'Timestamp exacto en que el Quality Gate aisló el registro en cuarentena'
+# MAGIC CREATE TABLE IF NOT EXISTS workspace.yelp_silver.slv_review_quarantine (
+# MAGIC   review_id         STRING              COMMENT 'Identificador de la reseña rechazada',
+# MAGIC   user_id           STRING              COMMENT 'Usuario reportado en la reseña rechazada',
+# MAGIC   business_id       STRING              COMMENT 'Negocio reportado en la reseña rechazada',
+# MAGIC   stars             INT                 COMMENT 'Calificación original de la reseña rechazada',
+# MAGIC   review_date       DATE                COMMENT 'Fecha original de la reseña rechazada',
+# MAGIC   text              STRING              COMMENT 'Texto original de la reseña, retenido para auditoría de Trust & Safety',
+# MAGIC   rejection_reason  STRING     NOT NULL COMMENT 'Regla de calidad incumplida (por ejemplo, autor inexistente o estrellas fuera de rango)',
+# MAGIC   rejected_at       TIMESTAMP  NOT NULL COMMENT 'Momento en que el pipeline rechazó la reseña',
+# MAGIC   source_file       STRING              COMMENT 'Archivo de Bronze del que proviene la fila'
 # MAGIC )
-# MAGIC COMMENT 'Zona de cuarentena explícita en Silver para reseñas que incumplen reglas DQ o integridad referencial (Acta 02). Data Owner: Trust & Safety (Rafael Nakamura).'
+# MAGIC COMMENT 'Reseñas de Bronze que no pasan a slv_review por incumplir una regla de calidad. Una fila por reseña rechazada. Las reseñas duplicadas no se rechazan: quedan en slv_review y Gold las marca como no válidas.'
 # MAGIC TBLPROPERTIES (delta.enableChangeDataFeed = true);
-
-# COMMAND ----------
-
-# MAGIC %sql
-# MAGIC -- Constraint CHECK enforzada sobre slv_review.stars (DQ-001: estrictamente entre 1 y 5)
-# MAGIC ALTER TABLE workspace.yelp_silver.slv_review DROP CONSTRAINT IF EXISTS chk_slv_review_stars;
-# MAGIC ALTER TABLE workspace.yelp_silver.slv_review ADD CONSTRAINT chk_slv_review_stars CHECK (stars BETWEEN 1 AND 5);
-
-# COMMAND ----------
-
-# DBTITLE 1,4. Entidades Silver — slv_tip (Consejos breves) y slv_checkin (Visitas a grano evento ADR-01)
-# MAGIC %sql
-# MAGIC -- ======================= 1.6 ENTIDAD SILVER: slv_tip =======================
+# MAGIC
 # MAGIC CREATE TABLE IF NOT EXISTS workspace.yelp_silver.slv_tip (
-# MAGIC   tip_id            STRING    NOT NULL COMMENT 'Identificador único determinístico (hash SHA-256) del consejo breve',
-# MAGIC   user_id           STRING    NOT NULL COMMENT 'Identificador del usuario autor del tip (FK hacia slv_user)',
-# MAGIC   business_id       STRING    NOT NULL COMMENT 'Identificador del negocio sobre el cual se publica el tip (FK hacia slv_business)',
-# MAGIC   text              STRING    NOT NULL COMMENT 'Texto breve del consejo o recomendación publicada por el usuario',
-# MAGIC   fecha_tip         TIMESTAMP NOT NULL COMMENT 'Marca temporal de publicación del consejo breve',
-# MAGIC   compliment_count  INT                COMMENT 'Cantidad de cumplidos o agradecimientos recibidos por el consejo',
-# MAGIC   fecha_carga       TIMESTAMP NOT NULL COMMENT 'Timestamp de procesamiento y carga en la capa Silver (auditoría)',
-# MAGIC   CONSTRAINT pk_slv_tip PRIMARY KEY (tip_id),
-# MAGIC   CONSTRAINT fk_tip_business FOREIGN KEY (business_id) REFERENCES workspace.yelp_silver.slv_business(business_id),
-# MAGIC   CONSTRAINT fk_tip_user FOREIGN KEY (user_id) REFERENCES workspace.yelp_silver.slv_user(user_id)
+# MAGIC   tip_id            STRING     NOT NULL COMMENT 'Identificador determinístico del tip: hash de user_id, business_id, tip_date y text',
+# MAGIC   user_id           STRING     NOT NULL COMMENT 'Usuario que escribió el tip',
+# MAGIC   business_id       STRING     NOT NULL COMMENT 'Negocio sobre el que trata el tip',
+# MAGIC   text              STRING              COMMENT 'Texto del tip',
+# MAGIC   tip_date          DATE       NOT NULL COMMENT 'Fecha en que se escribió el tip',
+# MAGIC   compliment_count  INT                 COMMENT 'Cantidad de cumplidos recibidos por el tip',
+# MAGIC   loaded_at         TIMESTAMP  NOT NULL COMMENT 'Momento en que la fila se cargó desde Bronze',
+# MAGIC   source_file       STRING              COMMENT 'Archivo de Bronze del que proviene la fila',
+# MAGIC   CONSTRAINT pk_slv_tip PRIMARY KEY (tip_id)
 # MAGIC )
-# MAGIC COMMENT 'Consejos breves (tips) conformados en Silver. Data Owner: Producto (Andrew Collins).'
+# MAGIC COMMENT 'Tips (sugerencias cortas) que los usuarios escribieron sobre negocios de Philadelphia. Una fila por tip.'
 # MAGIC TBLPROPERTIES (delta.enableChangeDataFeed = true);
 # MAGIC
-# MAGIC -- ======================= 1.7 ENTIDAD SILVER: slv_checkin =======================
-# MAGIC -- Decisión de diseño (ADR-01): el campo 'date' crudo (string de fechas separadas por coma)
-# MAGIC -- se explota a grano evento (1 fila = 1 check-in válido deduplicado por ventana horaria).
 # MAGIC CREATE TABLE IF NOT EXISTS workspace.yelp_silver.slv_checkin (
-# MAGIC   checkin_id     STRING    NOT NULL COMMENT 'Identificador único determinístico (hash SHA-256) del evento de check-in válido',
-# MAGIC   business_id    STRING    NOT NULL COMMENT 'Identificador del establecimiento comercial visitado (FK hacia slv_business)',
-# MAGIC   fecha_checkin  TIMESTAMP NOT NULL COMMENT 'Marca temporal individual de la visita tras explotar y deduplicar por ventana horaria (ADR-01)',
-# MAGIC   fecha_carga    TIMESTAMP NOT NULL COMMENT 'Timestamp de procesamiento y carga en la capa Silver (auditoría)',
-# MAGIC   CONSTRAINT pk_slv_checkin PRIMARY KEY (checkin_id),
-# MAGIC   CONSTRAINT fk_checkin_business FOREIGN KEY (business_id) REFERENCES workspace.yelp_silver.slv_business(business_id)
+# MAGIC   checkin_id    STRING     NOT NULL COMMENT 'Identificador determinístico del check-in: hash de business_id, checkin_at y posición en la lista original de checkin.date',
+# MAGIC   business_id   STRING     NOT NULL COMMENT 'Negocio donde se registró el check-in',
+# MAGIC   checkin_at    TIMESTAMP  NOT NULL COMMENT 'Fecha y hora en que se registró el check-in',
+# MAGIC   is_duplicate  BOOLEAN    NOT NULL COMMENT 'Verdadero si ya existe otro check-in del mismo negocio con la misma fecha y hora (DQ-010). Los duplicados no cuentan en las métricas',
+# MAGIC   loaded_at     TIMESTAMP  NOT NULL COMMENT 'Momento en que la fila se cargó desde Bronze',
+# MAGIC   source_file   STRING              COMMENT 'Archivo de Bronze del que proviene la fila',
+# MAGIC   CONSTRAINT pk_slv_checkin PRIMARY KEY (checkin_id)
 # MAGIC )
-# MAGIC COMMENT 'Eventos individuales de check-in explotados y deduplicados por ventana horaria (ADR-01). Data Owner: Operaciones Comerciales (Carla Romero).'
+# MAGIC COMMENT 'Eventos de check-in en negocios de Philadelphia. Una fila por cada fecha-hora de la lista original.'
+# MAGIC TBLPROPERTIES (delta.enableChangeDataFeed = true);
+# MAGIC
+# MAGIC CREATE TABLE IF NOT EXISTS workspace.yelp_silver.slv_photo (
+# MAGIC   photo_id     STRING     NOT NULL COMMENT 'Identificador único de la foto asignado por Yelp',
+# MAGIC   business_id  STRING     NOT NULL COMMENT 'Negocio al que pertenece la foto',
+# MAGIC   caption      STRING              COMMENT 'Descripción escrita por el usuario para la foto',
+# MAGIC   label        STRING              COMMENT 'Tipo de foto (comida, bebida, menú, interior o exterior)',
+# MAGIC   loaded_at    TIMESTAMP  NOT NULL COMMENT 'Momento en que la fila se cargó desde Bronze',
+# MAGIC   source_file  STRING              COMMENT 'Archivo de Bronze del que proviene la fila',
+# MAGIC   CONSTRAINT pk_slv_photo PRIMARY KEY (photo_id)
+# MAGIC )
+# MAGIC COMMENT 'Fotos que los usuarios subieron a negocios de Yelp. Una fila por foto. Sin datos en la muestra actual, porque el dataset descargado no incluye photo.json.'
 # MAGIC TBLPROPERTIES (delta.enableChangeDataFeed = true);
 
 # COMMAND ----------
 
-# DBTITLE 1,5. Capa Gold Dimensional (Esquema Estrella Kimball — ADR-05)
+# DBTITLE 1,3. Gold — dimensiones y puente
 # MAGIC %sql
-# MAGIC -- ======================= 2.1 DIMENSIÓN GOLD: gld_dim_negocio (SCD Tipo 1 y 2) =======================
-# MAGIC CREATE TABLE IF NOT EXISTS workspace.yelp_gold.gld_dim_negocio (
-# MAGIC   business_sk            STRING        NOT NULL COMMENT 'Clave subrogada (surrogate key) de la dimensión negocio',
-# MAGIC   business_id            STRING        NOT NULL COMMENT 'Clave natural del establecimiento comercial en YelpConnect',
-# MAGIC   nombre                 STRING        NOT NULL COMMENT 'Nombre comercial del establecimiento (SCD Tipo 1)',
-# MAGIC   ciudad                 STRING        NOT NULL COMMENT 'Ciudad normalizada del establecimiento comercial',
-# MAGIC   estado                 STRING                 COMMENT 'Código de estado o provincia de dos letras',
-# MAGIC   categoria_principal    STRING                 COMMENT 'Categoría comercial primaria extraída del primer elemento del arreglo para BI directo',
-# MAGIC   categorias             ARRAY<STRING>          COMMENT 'Arreglo completo de categorías comerciales del negocio (ADR-03)',
-# MAGIC   esta_abierto           BOOLEAN                COMMENT 'Estado operativo del negocio (auditado con historia SCD Tipo 2)',
-# MAGIC   fecha_inicio_vigencia  TIMESTAMP     NOT NULL COMMENT 'Fecha de inicio de vigencia del registro dimensional (SCD Tipo 2)',
-# MAGIC   fecha_fin_vigencia     TIMESTAMP              COMMENT 'Fecha de fin de vigencia del registro dimensional (NULL si es la versión actual)',
-# MAGIC   es_actual              BOOLEAN       NOT NULL COMMENT 'TRUE si el registro corresponde a la versión vigente actual del negocio',
-# MAGIC   CONSTRAINT pk_gld_dim_negocio PRIMARY KEY (business_sk)
+# MAGIC CREATE TABLE IF NOT EXISTS workspace.yelp_gold.gld_dim_date (
+# MAGIC   date_key     INT     NOT NULL COMMENT 'Clave de la fecha en formato AAAAMMDD',
+# MAGIC   full_date    DATE    NOT NULL COMMENT 'Fecha calendario',
+# MAGIC   year         INT     NOT NULL COMMENT 'Año de la fecha',
+# MAGIC   month        INT     NOT NULL COMMENT 'Número de mes (1 a 12)',
+# MAGIC   month_name   STRING  NOT NULL COMMENT 'Nombre del mes',
+# MAGIC   quarter      INT     NOT NULL COMMENT 'Trimestre del año (1 a 4)',
+# MAGIC   week_start   DATE             COMMENT 'Lunes de la semana a la que pertenece la fecha',
+# MAGIC   month_start  DATE             COMMENT 'Primer día del mes al que pertenece la fecha',
+# MAGIC   CONSTRAINT pk_gld_dim_date PRIMARY KEY (date_key)
 # MAGIC )
-# MAGIC COMMENT 'Dimensión conforme de Negocios con soporte híbrido SCD Tipo 1 y Tipo 2. Consumidor: Producto y Data Science.'
+# MAGIC COMMENT 'Dimensión de calendario. Una fila por día.'
 # MAGIC TBLPROPERTIES (delta.enableChangeDataFeed = true);
 # MAGIC
-# MAGIC -- ======================= 2.2 DIMENSIÓN GOLD: gld_dim_usuario (PII Enmascarada + SCD) =======================
-# MAGIC CREATE TABLE IF NOT EXISTS workspace.yelp_gold.gld_dim_usuario (
-# MAGIC   user_sk        STRING    NOT NULL COMMENT 'Clave subrogada (surrogate key) de la dimensión usuario',
-# MAGIC   user_id        STRING    NOT NULL COMMENT 'Clave natural seudonimizada del usuario en YelpConnect',
-# MAGIC   name_masked    STRING    NOT NULL COMMENT 'Nombre del usuario anonimizado/enmascarado para consumo analítico seguro (ADR-06)',
-# MAGIC   yelping_since  TIMESTAMP NOT NULL COMMENT 'Fecha de registro original del comensal para análisis de antigüedad y cohortes',
-# MAGIC   es_elite       BOOLEAN   NOT NULL COMMENT 'TRUE si el usuario cuenta con distinción activa en la comunidad Élite (SCD Tipo 2)',
-# MAGIC   average_stars  DOUBLE             COMMENT 'Calificación promedio histórica otorgada por el comensal',
-# MAGIC   es_actual      BOOLEAN   NOT NULL COMMENT 'TRUE si representa la versión vigente del perfil en la dimensión',
-# MAGIC   CONSTRAINT pk_gld_dim_usuario PRIMARY KEY (user_sk)
+# MAGIC CREATE TABLE IF NOT EXISTS workspace.yelp_gold.gld_dim_business (
+# MAGIC   business_key      STRING        NOT NULL COMMENT 'Identificador del negocio maestro (master_business_id de slv_business)',
+# MAGIC   name              STRING        NOT NULL COMMENT 'Nombre comercial del negocio',
+# MAGIC   city              STRING                 COMMENT 'Ciudad del negocio',
+# MAGIC   state             STRING                 COMMENT 'Estado del negocio',
+# MAGIC   primary_category  STRING                 COMMENT 'Nombre de la categoría principal del negocio: la marcada con is_primary en gld_bridge_business_category',
+# MAGIC   declared_stars    DECIMAL(2,1)           COMMENT 'Calificación declarada por Yelp para el negocio (stars de slv_business). Se compara con la calificación válida en rating_gap',
+# MAGIC   is_open           BOOLEAN                COMMENT 'Indica si el negocio sigue abierto',
+# MAGIC   CONSTRAINT pk_gld_dim_business PRIMARY KEY (business_key)
 # MAGIC )
-# MAGIC COMMENT 'Dimensión conforme de Usuarios con privacidad por diseño (nombre enmascarado). Consumidor: Producto y Data Science.'
+# MAGIC COMMENT 'Dimensión de negocios de Philadelphia, para análisis. Una fila por negocio maestro (golden record).'
 # MAGIC TBLPROPERTIES (delta.enableChangeDataFeed = true);
 # MAGIC
-# MAGIC -- ======================= 2.3 DIMENSIÓN GOLD: gld_dim_tiempo =======================
-# MAGIC CREATE TABLE IF NOT EXISTS workspace.yelp_gold.gld_dim_tiempo (
-# MAGIC   date_sk      INT     NOT NULL COMMENT 'Clave subrogada entera de fecha en formato YYYYMMDD',
-# MAGIC   fecha        DATE    NOT NULL COMMENT 'Fecha calendario en formato estándar YYYY-MM-DD',
-# MAGIC   anio         INT     NOT NULL COMMENT 'Año calendario de cuatro dígitos (ej. 2026)',
-# MAGIC   trimestre    INT     NOT NULL COMMENT 'Trimestre calendario del año (1 a 4)',
-# MAGIC   mes          INT     NOT NULL COMMENT 'Mes calendario del año (1 a 12)',
-# MAGIC   nombre_mes   STRING  NOT NULL COMMENT 'Nombre del mes en español para reportes ejecutivos',
-# MAGIC   dia_semana   STRING  NOT NULL COMMENT 'Nombre del día de la semana para análisis de estacionalidad intra-semanal',
-# MAGIC   CONSTRAINT pk_gld_dim_tiempo PRIMARY KEY (date_sk)
+# MAGIC CREATE TABLE IF NOT EXISTS workspace.yelp_gold.gld_dim_user (
+# MAGIC   user_key       STRING        NOT NULL COMMENT 'Identificador del usuario (user_id de Yelp)',
+# MAGIC   name           STRING        NOT NULL COMMENT 'Nombre de pila del usuario (dato personal, enmascarado en E6)',
+# MAGIC   yelping_since  DATE                   COMMENT 'Fecha en que el usuario se unió a Yelp',
+# MAGIC   fans           INT                    COMMENT 'Cantidad de seguidores del usuario',
+# MAGIC   avg_stars      DECIMAL(3,2)           COMMENT 'Calificación promedio que da el usuario',
+# MAGIC   is_elite       BOOLEAN                COMMENT 'Verdadero si Yelp reconoció al usuario como Elite en al menos un año',
+# MAGIC   CONSTRAINT pk_gld_dim_user PRIMARY KEY (user_key)
 # MAGIC )
-# MAGIC COMMENT 'Dimensión calendario generada programáticamente para el esquema estrella Kimball. Consumidor: Transversal.'
+# MAGIC COMMENT 'Dimensión de usuarios de Yelp, para análisis. Una fila por usuario.'
 # MAGIC TBLPROPERTIES (delta.enableChangeDataFeed = true);
 # MAGIC
-# MAGIC -- ======================= 2.4 TABLA DE HECHOS ATÓMICA: gld_fact_resenas =======================
-# MAGIC CREATE TABLE IF NOT EXISTS workspace.yelp_gold.gld_fact_resenas (
-# MAGIC   review_sk    STRING  NOT NULL COMMENT 'Clave subrogada del hecho atómico de reseña',
-# MAGIC   review_id    STRING  NOT NULL COMMENT 'Clave degenerada con el identificador original de la reseña verificada',
-# MAGIC   business_sk  STRING  NOT NULL COMMENT 'Clave foránea hacia la dimensión de negocios (gld_dim_negocio)',
-# MAGIC   user_sk      STRING  NOT NULL COMMENT 'Clave foránea hacia la dimensión de usuarios (gld_dim_usuario)',
-# MAGIC   date_sk      INT     NOT NULL COMMENT 'Clave foránea hacia la dimensión de tiempo (gld_dim_tiempo)',
-# MAGIC   stars        INT     NOT NULL COMMENT 'Métrica aditiva/semi-aditiva de calificación en estrellas (1 a 5)',
-# MAGIC   text_len     INT     NOT NULL COMMENT 'Longitud en caracteres del comentario de la reseña (sin exponer PII indirecta)',
-# MAGIC   useful       INT     NOT NULL COMMENT 'Cantidad de votos de utilidad comunitaria recibidos por la reseña',
-# MAGIC   CONSTRAINT pk_gld_fact_resenas PRIMARY KEY (review_sk),
-# MAGIC   CONSTRAINT fk_fact_negocio FOREIGN KEY (business_sk) REFERENCES workspace.yelp_gold.gld_dim_negocio(business_sk),
-# MAGIC   CONSTRAINT fk_fact_usuario FOREIGN KEY (user_sk) REFERENCES workspace.yelp_gold.gld_dim_usuario(user_sk),
-# MAGIC   CONSTRAINT fk_fact_tiempo  FOREIGN KEY (date_sk) REFERENCES workspace.yelp_gold.gld_dim_tiempo(date_sk)
+# MAGIC CREATE TABLE IF NOT EXISTS workspace.yelp_gold.gld_dim_category (
+# MAGIC   category_key  BIGINT  NOT NULL COMMENT 'Identificador único de la categoría de negocio (category_id de slv_category)',
+# MAGIC   name          STRING  NOT NULL COMMENT 'Nombre de la categoría de negocio, único y normalizado',
+# MAGIC   CONSTRAINT pk_gld_dim_category PRIMARY KEY (category_key)
 # MAGIC )
-# MAGIC COMMENT 'Tabla de hechos transaccional atómica (grano: 1 fila por reseña verificada). Consumidor: Producto y Data Science (Mei Lin).'
+# MAGIC COMMENT 'Dimensión de categorías de negocio. Una fila por categoría.'
+# MAGIC TBLPROPERTIES (delta.enableChangeDataFeed = true);
+# MAGIC
+# MAGIC CREATE TABLE IF NOT EXISTS workspace.yelp_gold.gld_bridge_business_category (
+# MAGIC   business_key  STRING   NOT NULL COMMENT 'Negocio al que se asigna la categoría',
+# MAGIC   category_key  BIGINT   NOT NULL COMMENT 'Categoría asignada al negocio',
+# MAGIC   is_primary    BOOLEAN  NOT NULL COMMENT 'Indica si es la categoría principal del negocio (la de más negocios en la muestra; en empate, la primera en orden alfabético)',
+# MAGIC   CONSTRAINT pk_gld_bridge_business_category PRIMARY KEY (business_key, category_key)
+# MAGIC )
+# MAGIC COMMENT 'Puente entre negocios y categorías. Una fila por par negocio-categoría.'
 # MAGIC TBLPROPERTIES (delta.enableChangeDataFeed = true);
 
 # COMMAND ----------
 
-# DBTITLE 1,6. Capa Gold — Tablas de KPIs y Productos Agregados por Stakeholder (Sección 7 Doc Formal)
+# DBTITLE 1,4. Gold — hechos
 # MAGIC %sql
-# MAGIC -- ======================= 2.5 PRODUCTO GOLD: gld_kpi_negocio_mensual =======================
-# MAGIC CREATE TABLE IF NOT EXISTS workspace.yelp_gold.gld_kpi_negocio_mensual (
-# MAGIC   business_id       STRING    NOT NULL COMMENT 'Identificador único del establecimiento comercial evaluado',
-# MAGIC   nombre            STRING    NOT NULL COMMENT 'Nombre comercial del negocio para visualización en el dashboard E8',
-# MAGIC   ciudad            STRING    NOT NULL COMMENT 'Ciudad normalizada del establecimiento comercial',
-# MAGIC   mes               TIMESTAMP NOT NULL COMMENT 'Mes calendario truncado de evaluación del KPI (YYYY-MM-01)',
-# MAGIC   n_resenas         BIGINT    NOT NULL COMMENT 'Volumen mensual de reseñas verificadas recibidas por el negocio',
-# MAGIC   rating_promedio   DOUBLE    NOT NULL COMMENT 'Promedio aritmético simple de calificaciones del negocio en el mes',
-# MAGIC   rating_bayesiano  DOUBLE             COMMENT 'Rating Promedio Ponderado Bayesiano (BWR con m=25 reseñas según ADR-02)',
-# MAGIC   usuarios_unicos   BIGINT    NOT NULL COMMENT 'Cantidad de comensales únicos que reseñaron el negocio en el mes',
-# MAGIC   CONSTRAINT pk_gld_kpi_negocio_mensual PRIMARY KEY (business_id, mes)
+# MAGIC CREATE TABLE IF NOT EXISTS workspace.yelp_gold.gld_fact_review (
+# MAGIC   review_id       STRING     NOT NULL COMMENT 'Identificador único de la reseña',
+# MAGIC   business_key    STRING     NOT NULL COMMENT 'Negocio maestro reseñado',
+# MAGIC   user_key        STRING     NOT NULL COMMENT 'Usuario que escribió la reseña',
+# MAGIC   date_key        INT        NOT NULL COMMENT 'Fecha de publicación de la reseña',
+# MAGIC   stars           INT        NOT NULL COMMENT 'Calificación de 1 a 5 estrellas',
+# MAGIC   useful          INT                 COMMENT 'Votos "útil" recibidos',
+# MAGIC   funny           INT                 COMMENT 'Votos "divertido" recibidos',
+# MAGIC   cool            INT                 COMMENT 'Votos "genial" recibidos',
+# MAGIC   loaded_at       TIMESTAMP  NOT NULL COMMENT 'Momento de la carga de Silver de la que proviene la fila',
+# MAGIC   is_valid        BOOLEAN             COMMENT 'Indica si la reseña es válida (no está duplicada). Solo las reseñas válidas cuentan en las métricas oficiales',
+# MAGIC   invalid_reason  STRING              COMMENT 'Motivo por el que la reseña no es válida (duplicada). Vacío si la reseña es válida',
+# MAGIC   CONSTRAINT pk_gld_fact_review PRIMARY KEY (review_id)
 # MAGIC )
-# MAGIC COMMENT 'KPIs mensuales de satisfacción y volumen por negocio. Stakeholder: Producto (Andrew Collins — REQ-01).'
+# MAGIC COMMENT 'Hechos de reseñas. Una fila por reseña publicada.'
 # MAGIC TBLPROPERTIES (delta.enableChangeDataFeed = true);
 # MAGIC
-# MAGIC -- ======================= 2.6 PRODUCTO GOLD: gld_checkins_diarios =======================
-# MAGIC CREATE TABLE IF NOT EXISTS workspace.yelp_gold.gld_checkins_diarios (
-# MAGIC   business_id       STRING  NOT NULL COMMENT 'Identificador del establecimiento comercial visitado',
-# MAGIC   fecha             DATE    NOT NULL COMMENT 'Fecha calendario de las visitas presenciales confirmadas',
-# MAGIC   checkins_validos  BIGINT  NOT NULL COMMENT 'Conteo oficial homologado de check-ins válidos deduplicados por hora (HAI - ADR-01)',
-# MAGIC   CONSTRAINT pk_gld_checkins_diarios PRIMARY KEY (business_id, fecha)
+# MAGIC CREATE TABLE IF NOT EXISTS workspace.yelp_gold.gld_fact_checkin (
+# MAGIC   checkin_id    STRING     NOT NULL COMMENT 'Identificador determinístico del check-in (el mismo de slv_checkin)',
+# MAGIC   business_key  STRING     NOT NULL COMMENT 'Negocio maestro visitado',
+# MAGIC   date_key      INT        NOT NULL COMMENT 'Fecha del check-in en formato AAAAMMDD',
+# MAGIC   checkin_hour  INT                 COMMENT 'Hora del check-in, de 0 a 23',
+# MAGIC   is_duplicate  BOOLEAN    NOT NULL COMMENT 'Verdadero si es un check-in duplicado (DQ-010). Los duplicados no cuentan en las métricas',
+# MAGIC   loaded_at     TIMESTAMP  NOT NULL COMMENT 'Momento de la carga de Silver de la que proviene la fila',
+# MAGIC   CONSTRAINT pk_gld_fact_checkin PRIMARY KEY (checkin_id)
 # MAGIC )
-# MAGIC COMMENT 'Conteo oficial diario de check-ins válidos para liquidación publicitaria y fidelidad. Stakeholder: Operaciones Comerciales (Carla Romero — REQ-02, REQ-05).'
+# MAGIC COMMENT 'Hechos de check-in. Una fila por check-in. No identifica al usuario.'
 # MAGIC TBLPROPERTIES (delta.enableChangeDataFeed = true);
 # MAGIC
-# MAGIC -- ======================= 2.7 PRODUCTO GOLD: gld_salud_resenas =======================
-# MAGIC CREATE TABLE IF NOT EXISTS workspace.yelp_gold.gld_salud_resenas (
-# MAGIC   mes                  TIMESTAMP NOT NULL COMMENT 'Mes calendario de auditoría de calidad y moderación de reseñas',
-# MAGIC   resenas_verificadas  BIGINT    NOT NULL COMMENT 'Volumen mensual de reseñas que aprobaron el 100% de reglas DQ críticas',
-# MAGIC   resenas_cuarentena   BIGINT    NOT NULL COMMENT 'Volumen mensual de reseñas aisladas preventivamente en slv_review_cuarentena',
-# MAGIC   pct_cuarentena       DOUBLE    NOT NULL COMMENT 'Porcentaje de reseñas en cuarentena sobre el total bruto del mes (complemento RHR)',
-# MAGIC   CONSTRAINT pk_gld_salud_resenas PRIMARY KEY (mes)
+# MAGIC CREATE TABLE IF NOT EXISTS workspace.yelp_gold.gld_fact_tip (
+# MAGIC   tip_id            STRING     NOT NULL COMMENT 'Identificador determinístico del tip (el mismo de slv_tip)',
+# MAGIC   user_key          STRING     NOT NULL COMMENT 'Usuario que escribió el tip',
+# MAGIC   business_key      STRING     NOT NULL COMMENT 'Negocio maestro que recibió el tip',
+# MAGIC   date_key          INT        NOT NULL COMMENT 'Fecha de publicación del tip en formato AAAAMMDD',
+# MAGIC   compliment_count  INT                 COMMENT 'Cantidad de cumplidos recibidos por el tip',
+# MAGIC   loaded_at         TIMESTAMP  NOT NULL COMMENT 'Momento de la carga de Silver de la que proviene la fila',
+# MAGIC   CONSTRAINT pk_gld_fact_tip PRIMARY KEY (tip_id)
 # MAGIC )
-# MAGIC COMMENT 'Métricas mensuales de salud de calidad de reseñas y tasa de cuarentena. Stakeholder: Trust & Safety (Rafael Nakamura — REQ-03).'
-# MAGIC TBLPROPERTIES (delta.enableChangeDataFeed = true);
-# MAGIC
-# MAGIC -- ======================= 2.8 PRODUCTO GOLD: gld_cohortes_retencion_mensual =======================
-# MAGIC CREATE TABLE IF NOT EXISTS workspace.yelp_gold.gld_cohortes_retencion_mensual (
-# MAGIC   cohorte_mes       DATE    NOT NULL COMMENT 'Mes calendario de registro original del usuario (cohorte de adquisición)',
-# MAGIC   mes_actividad     DATE    NOT NULL COMMENT 'Mes calendario en el que se registra la interacción recurrente de la cohorte',
-# MAGIC   usuarios_activos  BIGINT  NOT NULL COMMENT 'Cantidad de usuarios únicos de la cohorte con actividad validada en el mes',
-# MAGIC   retencion_pct     DOUBLE  NOT NULL COMMENT 'Tasa de Retención de Cohortes (CRR %) respecto al tamaño inicial de la camada',
-# MAGIC   CONSTRAINT pk_gld_cohortes_retencion PRIMARY KEY (cohorte_mes, mes_actividad)
-# MAGIC )
-# MAGIC COMMENT 'Matriz mensual de retención de cohortes de usuarios (CRR). Stakeholder: Producto (Andrew Collins — REQ-04).'
+# MAGIC COMMENT 'Hechos de tips. Una fila por tip.'
 # MAGIC TBLPROPERTIES (delta.enableChangeDataFeed = true);
 
 # COMMAND ----------
 
-# DBTITLE 1,Validación automática del entregable (correr antes del PR)
-tablas = spark.sql("SHOW TABLES IN workspace.yelp_silver").collect()
-assert len(tablas) >= 5, f"Deben existir al menos las 5 entidades en silver (hay {len(tablas)})"
+# DBTITLE 1,5. Gold — agregados del modelo dimensional
+# MAGIC %sql
+# MAGIC CREATE TABLE IF NOT EXISTS workspace.yelp_gold.gld_agg_business_month (
+# MAGIC   business_key            STRING        NOT NULL COMMENT 'Negocio al que corresponde el corte mensual',
+# MAGIC   period_month            INT           NOT NULL COMMENT 'Mes del indicador en formato AAAAMM',
+# MAGIC   review_count            INT                    COMMENT 'Cantidad mensual de reseñas del negocio',
+# MAGIC   avg_review_stars        DECIMAL(3,2)           COMMENT 'Calificación promedio mensual de todas las reseñas publicadas',
+# MAGIC   review_author_count     INT                    COMMENT 'Autores únicos de reseñas del negocio en el mes',
+# MAGIC   checkin_count           INT                    COMMENT 'Cantidad mensual de check-ins',
+# MAGIC   tip_count               INT                    COMMENT 'Cantidad mensual de tips',
+# MAGIC   interaction_count       INT                    COMMENT 'Reseñas, check-ins y tips del mes (eventos, no usuarios)',
+# MAGIC   valid_review_count      INT                    COMMENT 'Cantidad de reseñas válidas del negocio en el mes',
+# MAGIC   valid_rating            DECIMAL(3,2)           COMMENT 'Promedio de estrellas de las reseñas válidas del negocio en el mes',
+# MAGIC   useful_review_rate      DECIMAL(5,4)           COMMENT 'Proporción de reseñas válidas con al menos un voto útil',
+# MAGIC   days_since_last_review  INT                    COMMENT 'Días entre la última reseña válida y el cierre del mes',
+# MAGIC   rating_gap              DECIMAL(3,2)           COMMENT 'Diferencia entre la calificación declarada (declared_stars de gld_dim_business) y la calificación válida',
+# MAGIC   negative_review_rate    DECIMAL(5,4)           COMMENT 'Proporción de reseñas válidas de 1 o 2 estrellas',
+# MAGIC   invalid_content_rate    DECIMAL(5,4)           COMMENT 'Proporción de reseñas no válidas sobre el total de reseñas del mes',
+# MAGIC   calculated_at           TIMESTAMP              COMMENT 'Momento en que se calculó el indicador',
+# MAGIC   CONSTRAINT pk_gld_agg_business_month PRIMARY KEY (business_key, period_month)
+# MAGIC )
+# MAGIC COMMENT 'Indicadores mensuales por negocio. Una fila por negocio y mes.'
+# MAGIC TBLPROPERTIES (delta.enableChangeDataFeed = true);
+# MAGIC
+# MAGIC CREATE TABLE IF NOT EXISTS workspace.yelp_gold.gld_agg_business_week (
+# MAGIC   business_key   STRING  NOT NULL COMMENT 'Negocio al que corresponde el corte semanal',
+# MAGIC   week_start     DATE    NOT NULL COMMENT 'Lunes de la semana del indicador',
+# MAGIC   checkin_count  INT              COMMENT 'Cantidad de check-ins únicos del negocio en la semana',
+# MAGIC   tip_count      INT              COMMENT 'Cantidad de tips del negocio en la semana',
+# MAGIC   CONSTRAINT pk_gld_agg_business_week PRIMARY KEY (business_key, week_start)
+# MAGIC )
+# MAGIC COMMENT 'Engagement semanal por negocio. Una fila por negocio y semana.'
+# MAGIC TBLPROPERTIES (delta.enableChangeDataFeed = true);
+# MAGIC
+# MAGIC CREATE TABLE IF NOT EXISTS workspace.yelp_gold.gld_agg_category_month (
+# MAGIC   category_key           BIGINT        NOT NULL COMMENT 'Categoría principal (is_primary = true en el puente) a la que corresponde el corte',
+# MAGIC   period_month           INT           NOT NULL COMMENT 'Mes del indicador en formato AAAAMM',
+# MAGIC   business_count         INT                    COMMENT 'Cantidad de negocios de la categoría',
+# MAGIC   review_count           INT                    COMMENT 'Cantidad de reseñas de los negocios de la categoría en el mes',
+# MAGIC   checkin_count          INT                    COMMENT 'Cantidad de check-ins de los negocios de la categoría en el mes',
+# MAGIC   avg_review_stars       DECIMAL(3,2)           COMMENT 'Calificación promedio de todas las reseñas de la categoría en el mes',
+# MAGIC   valid_rating           DECIMAL(3,2)           COMMENT 'Promedio de estrellas de las reseñas válidas de la categoría en el mes',
+# MAGIC   negative_review_count  INT                    COMMENT 'Reseñas válidas de 1 o 2 estrellas de la categoría en el mes',
+# MAGIC   CONSTRAINT pk_gld_agg_category_month PRIMARY KEY (category_key, period_month)
+# MAGIC )
+# MAGIC COMMENT 'Indicadores mensuales por categoría principal. Una fila por categoría y mes.'
+# MAGIC TBLPROPERTIES (delta.enableChangeDataFeed = true);
+# MAGIC
+# MAGIC CREATE TABLE IF NOT EXISTS workspace.yelp_gold.gld_agg_user_month (
+# MAGIC   user_key            STRING   NOT NULL COMMENT 'Usuario al que corresponde el corte mensual',
+# MAGIC   period_month        INT      NOT NULL COMMENT 'Mes de la actividad en formato AAAAMM',
+# MAGIC   review_count        INT               COMMENT 'Reseñas publicadas por el usuario en el mes',
+# MAGIC   tip_count           INT               COMMENT 'Tips publicados por el usuario en el mes',
+# MAGIC   contribution_count  INT               COMMENT 'Reseñas y tips del usuario en el mes',
+# MAGIC   is_contributor      BOOLEAN           COMMENT 'Verdadero si el usuario publicó al menos una reseña o tip en el mes',
+# MAGIC   CONSTRAINT pk_gld_agg_user_month PRIMARY KEY (user_key, period_month)
+# MAGIC )
+# MAGIC COMMENT 'Actividad mensual por usuario. Una fila por usuario y mes.'
+# MAGIC TBLPROPERTIES (delta.enableChangeDataFeed = true);
 
-tablas_gold = spark.sql("SHOW TABLES IN workspace.yelp_gold").collect()
-assert len(tablas_gold) >= 5, f"Deben existir al menos 5 tablas en gold (hay {len(tablas_gold)})"
+# COMMAND ----------
 
-sin_comment = spark.sql("""
+# DBTITLE 1,6. Gold — agregados de KPIs por stakeholder (conservados del diseño anterior)
+# MAGIC %sql
+# MAGIC CREATE TABLE IF NOT EXISTS workspace.yelp_gold.gld_agg_business_bayesian_month (
+# MAGIC   business_key        STRING        NOT NULL COMMENT 'Negocio al que corresponde el corte mensual',
+# MAGIC   period_month        INT           NOT NULL COMMENT 'Mes del indicador en formato AAAAMM',
+# MAGIC   valid_review_count  INT                    COMMENT 'Cantidad de reseñas válidas del negocio en el mes',
+# MAGIC   valid_rating        DECIMAL(3,2)           COMMENT 'Promedio simple de estrellas de las reseñas válidas del negocio en el mes',
+# MAGIC   bayesian_rating     DECIMAL(3,2)           COMMENT 'Calificación bayesiana: pondera valid_rating con el promedio de la ciudad usando m = 25 reseñas, para que los negocios con pocas reseñas no queden arriba del ranking',
+# MAGIC   review_author_count INT                    COMMENT 'Autores únicos de reseñas válidas del negocio en el mes',
+# MAGIC   CONSTRAINT pk_gld_agg_business_bayesian_month PRIMARY KEY (business_key, period_month)
+# MAGIC )
+# MAGIC COMMENT 'Calificación bayesiana mensual por negocio, para el ranking de Producto (Andrew Collins). Una fila por negocio y mes.'
+# MAGIC TBLPROPERTIES (delta.enableChangeDataFeed = true);
+# MAGIC
+# MAGIC CREATE TABLE IF NOT EXISTS workspace.yelp_gold.gld_agg_business_checkin_day (
+# MAGIC   business_key        STRING  NOT NULL COMMENT 'Negocio visitado',
+# MAGIC   date_key            INT     NOT NULL COMMENT 'Fecha de las visitas en formato AAAAMMDD',
+# MAGIC   checkin_count       INT              COMMENT 'Cantidad de check-ins no duplicados del negocio en el día',
+# MAGIC   active_hour_count   INT              COMMENT 'Cantidad de horas distintas del día con al menos un check-in (conteo homologado de afluencia por ventana de 60 minutos)',
+# MAGIC   CONSTRAINT pk_gld_agg_business_checkin_day PRIMARY KEY (business_key, date_key)
+# MAGIC )
+# MAGIC COMMENT 'Conteo diario oficial de check-ins por negocio, para Operaciones Comerciales (Carla Romero). Una fila por negocio y día con check-ins.'
+# MAGIC TBLPROPERTIES (delta.enableChangeDataFeed = true);
+# MAGIC
+# MAGIC CREATE TABLE IF NOT EXISTS workspace.yelp_gold.gld_agg_review_health_month (
+# MAGIC   period_month              INT           NOT NULL COMMENT 'Mes de publicación de las reseñas en formato AAAAMM',
+# MAGIC   valid_review_count        INT                    COMMENT 'Reseñas válidas del mes (en Silver y no duplicadas)',
+# MAGIC   invalid_review_count      INT                    COMMENT 'Reseñas del mes marcadas como no válidas por duplicado',
+# MAGIC   quarantined_review_count  INT                    COMMENT 'Reseñas del mes rechazadas en slv_review_quarantine',
+# MAGIC   quarantine_rate           DECIMAL(5,4)           COMMENT 'Proporción de reseñas rechazadas sobre el total de reseñas recibidas en el mes',
+# MAGIC   CONSTRAINT pk_gld_agg_review_health_month PRIMARY KEY (period_month)
+# MAGIC )
+# MAGIC COMMENT 'Salud mensual de las reseñas: válidas, duplicadas y rechazadas, para Trust & Safety (Rafael Nakamura). Una fila por mes.'
+# MAGIC TBLPROPERTIES (delta.enableChangeDataFeed = true);
+# MAGIC
+# MAGIC CREATE TABLE IF NOT EXISTS workspace.yelp_gold.gld_agg_user_cohort_month (
+# MAGIC   cohort_month       INT           NOT NULL COMMENT 'Mes en que los usuarios se unieron a Yelp, en formato AAAAMM',
+# MAGIC   activity_month     INT           NOT NULL COMMENT 'Mes de actividad de la cohorte, en formato AAAAMM',
+# MAGIC   months_since_join  INT                    COMMENT 'Meses transcurridos entre cohort_month y activity_month',
+# MAGIC   cohort_size        INT                    COMMENT 'Cantidad de usuarios de la cohorte',
+# MAGIC   active_user_count  INT                    COMMENT 'Usuarios de la cohorte que publicaron al menos una reseña válida en el mes',
+# MAGIC   retention_rate     DECIMAL(5,4)           COMMENT 'Proporción de usuarios de la cohorte activos en el mes',
+# MAGIC   CONSTRAINT pk_gld_agg_user_cohort_month PRIMARY KEY (cohort_month, activity_month)
+# MAGIC )
+# MAGIC COMMENT 'Retención mensual de cohortes de usuarios según su mes de alta, para Producto (Andrew Collins). Una fila por cohorte y mes de actividad.'
+# MAGIC TBLPROPERTIES (delta.enableChangeDataFeed = true);
+
+# COMMAND ----------
+
+# DBTITLE 1,7. Restricciones CHECK y claves foráneas (idempotentes)
+restricciones = [
+    # CHECK enforzadas
+    ("workspace.yelp_silver.slv_business", "chk_slv_business_stars", "CHECK (stars IS NULL OR stars BETWEEN 1.0 AND 5.0)"),
+    ("workspace.yelp_silver.slv_review", "chk_slv_review_stars", "CHECK (stars BETWEEN 1 AND 5)"),
+    ("workspace.yelp_silver.slv_friendship", "chk_slv_friendship_order", "CHECK (user_id_1 < user_id_2)"),
+    ("workspace.yelp_gold.gld_fact_review", "chk_gld_fact_review_stars", "CHECK (stars BETWEEN 1 AND 5)"),
+    ("workspace.yelp_gold.gld_dim_date", "chk_gld_dim_date_month", "CHECK (month BETWEEN 1 AND 12)"),
+    ("workspace.yelp_gold.gld_dim_date", "chk_gld_dim_date_quarter", "CHECK (quarter BETWEEN 1 AND 4)"),
+    # Claves foráneas Silver
+    ("workspace.yelp_silver.slv_business", "fk_slv_business_master", "FOREIGN KEY (master_business_id) REFERENCES workspace.yelp_silver.slv_business(business_id)"),
+    ("workspace.yelp_silver.slv_review", "fk_slv_review_user", "FOREIGN KEY (user_id) REFERENCES workspace.yelp_silver.slv_user(user_id)"),
+    ("workspace.yelp_silver.slv_review", "fk_slv_review_business", "FOREIGN KEY (business_id) REFERENCES workspace.yelp_silver.slv_business(business_id)"),
+    ("workspace.yelp_silver.slv_business_category", "fk_slv_business_category_business", "FOREIGN KEY (business_id) REFERENCES workspace.yelp_silver.slv_business(business_id)"),
+    ("workspace.yelp_silver.slv_business_category", "fk_slv_business_category_category", "FOREIGN KEY (category_id) REFERENCES workspace.yelp_silver.slv_category(category_id)"),
+    ("workspace.yelp_silver.slv_checkin", "fk_slv_checkin_business", "FOREIGN KEY (business_id) REFERENCES workspace.yelp_silver.slv_business(business_id)"),
+    ("workspace.yelp_silver.slv_tip", "fk_slv_tip_user", "FOREIGN KEY (user_id) REFERENCES workspace.yelp_silver.slv_user(user_id)"),
+    ("workspace.yelp_silver.slv_tip", "fk_slv_tip_business", "FOREIGN KEY (business_id) REFERENCES workspace.yelp_silver.slv_business(business_id)"),
+    ("workspace.yelp_silver.slv_photo", "fk_slv_photo_business", "FOREIGN KEY (business_id) REFERENCES workspace.yelp_silver.slv_business(business_id)"),
+    ("workspace.yelp_silver.slv_friendship", "fk_slv_friendship_user_1", "FOREIGN KEY (user_id_1) REFERENCES workspace.yelp_silver.slv_user(user_id)"),
+    ("workspace.yelp_silver.slv_friendship", "fk_slv_friendship_user_2", "FOREIGN KEY (user_id_2) REFERENCES workspace.yelp_silver.slv_user(user_id)"),
+    # Claves foráneas Gold
+    ("workspace.yelp_gold.gld_bridge_business_category", "fk_gld_bridge_business_category_business", "FOREIGN KEY (business_key) REFERENCES workspace.yelp_gold.gld_dim_business(business_key)"),
+    ("workspace.yelp_gold.gld_bridge_business_category", "fk_gld_bridge_business_category_category", "FOREIGN KEY (category_key) REFERENCES workspace.yelp_gold.gld_dim_category(category_key)"),
+    ("workspace.yelp_gold.gld_fact_review", "fk_gld_fact_review_business", "FOREIGN KEY (business_key) REFERENCES workspace.yelp_gold.gld_dim_business(business_key)"),
+    ("workspace.yelp_gold.gld_fact_review", "fk_gld_fact_review_user", "FOREIGN KEY (user_key) REFERENCES workspace.yelp_gold.gld_dim_user(user_key)"),
+    ("workspace.yelp_gold.gld_fact_review", "fk_gld_fact_review_date", "FOREIGN KEY (date_key) REFERENCES workspace.yelp_gold.gld_dim_date(date_key)"),
+    ("workspace.yelp_gold.gld_fact_checkin", "fk_gld_fact_checkin_business", "FOREIGN KEY (business_key) REFERENCES workspace.yelp_gold.gld_dim_business(business_key)"),
+    ("workspace.yelp_gold.gld_fact_checkin", "fk_gld_fact_checkin_date", "FOREIGN KEY (date_key) REFERENCES workspace.yelp_gold.gld_dim_date(date_key)"),
+    ("workspace.yelp_gold.gld_fact_tip", "fk_gld_fact_tip_user", "FOREIGN KEY (user_key) REFERENCES workspace.yelp_gold.gld_dim_user(user_key)"),
+    ("workspace.yelp_gold.gld_fact_tip", "fk_gld_fact_tip_business", "FOREIGN KEY (business_key) REFERENCES workspace.yelp_gold.gld_dim_business(business_key)"),
+    ("workspace.yelp_gold.gld_fact_tip", "fk_gld_fact_tip_date", "FOREIGN KEY (date_key) REFERENCES workspace.yelp_gold.gld_dim_date(date_key)"),
+    ("workspace.yelp_gold.gld_agg_business_month", "fk_gld_agg_business_month_business", "FOREIGN KEY (business_key) REFERENCES workspace.yelp_gold.gld_dim_business(business_key)"),
+    ("workspace.yelp_gold.gld_agg_business_week", "fk_gld_agg_business_week_business", "FOREIGN KEY (business_key) REFERENCES workspace.yelp_gold.gld_dim_business(business_key)"),
+    ("workspace.yelp_gold.gld_agg_category_month", "fk_gld_agg_category_month_category", "FOREIGN KEY (category_key) REFERENCES workspace.yelp_gold.gld_dim_category(category_key)"),
+    ("workspace.yelp_gold.gld_agg_user_month", "fk_gld_agg_user_month_user", "FOREIGN KEY (user_key) REFERENCES workspace.yelp_gold.gld_dim_user(user_key)"),
+    ("workspace.yelp_gold.gld_agg_business_bayesian_month", "fk_gld_agg_business_bayesian_month_business", "FOREIGN KEY (business_key) REFERENCES workspace.yelp_gold.gld_dim_business(business_key)"),
+    ("workspace.yelp_gold.gld_agg_business_checkin_day", "fk_gld_agg_business_checkin_day_business", "FOREIGN KEY (business_key) REFERENCES workspace.yelp_gold.gld_dim_business(business_key)"),
+    ("workspace.yelp_gold.gld_agg_business_checkin_day", "fk_gld_agg_business_checkin_day_date", "FOREIGN KEY (date_key) REFERENCES workspace.yelp_gold.gld_dim_date(date_key)"),
+]
+
+for tabla, nombre, definicion in restricciones:
+    spark.sql(f"ALTER TABLE {tabla} DROP CONSTRAINT IF EXISTS {nombre}")
+    spark.sql(f"ALTER TABLE {tabla} ADD CONSTRAINT {nombre} {definicion}")
+print(f"✔ {len(restricciones)} restricciones CHECK / FOREIGN KEY declaradas")
+
+# COMMAND ----------
+
+# DBTITLE 1,Validación automática del entregable
+silver_esperadas = {"slv_business", "slv_category", "slv_business_category", "slv_user", "slv_friendship",
+                    "slv_review", "slv_review_quarantine", "slv_tip", "slv_checkin", "slv_photo"}
+gold_esperadas = {"gld_dim_date", "gld_dim_business", "gld_dim_user", "gld_dim_category", "gld_bridge_business_category",
+                  "gld_fact_review", "gld_fact_checkin", "gld_fact_tip",
+                  "gld_agg_business_month", "gld_agg_business_week", "gld_agg_category_month", "gld_agg_user_month",
+                  "gld_agg_business_bayesian_month", "gld_agg_business_checkin_day", "gld_agg_review_health_month", "gld_agg_user_cohort_month"}
+
+silver = {r.tableName for r in spark.sql("SHOW TABLES IN workspace.yelp_silver").collect()}
+gold = {r.tableName for r in spark.sql("SHOW TABLES IN workspace.yelp_gold").collect()}
+assert silver_esperadas <= silver, f"Faltan tablas Silver: {silver_esperadas - silver}"
+assert gold_esperadas <= gold, f"Faltan tablas Gold: {gold_esperadas - gold}"
+
+tablas_modelo = sorted(silver_esperadas | gold_esperadas)
+lista_sql = ", ".join(f"'{t}'" for t in tablas_modelo)
+sin_comment = spark.sql(f"""
   SELECT table_name, column_name
   FROM workspace.information_schema.columns
   WHERE table_schema IN ('yelp_silver','yelp_gold')
+    AND table_name IN ({lista_sql})
     AND (comment IS NULL OR comment = '')
 """).collect()
 assert not sin_comment, f"❌ Columnas sin COMMENT (rompe E4): {[(r.table_name, r.column_name) for r in sin_comment]}"
-print(f"✔ Modelo físico validado: {len(tablas)} tablas en Silver · {len(tablas_gold)} tablas en Gold · 100% de columnas documentadas con COMMENT")
+print(f"✔ Modelo físico validado: {len(silver_esperadas)} tablas Silver · {len(gold_esperadas)} tablas Gold · 100% de columnas con COMMENT")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Decisiones de Implementación del Modelo Físico (Trazabilidad con Sección 4 del Documento Formal)
+# MAGIC ## Decisiones de implementación del modelo físico
 # MAGIC
-# MAGIC 1. **Categorías como `ARRAY<STRING>` nativo en Silver (`slv_business.categorias` — ADR-03):**
-# MAGIC    * Se descartó materializar una tabla puente relacional `slv_negocio_categoria` en Silver para evitar costosos *shuffle joins* que consumirían la cuota diaria de cómputo Serverless en Databricks Free Edition. En `gld_dim_negocio` se expone además `categoria_principal STRING` para facilitar agrupaciones directas en BI.
-# MAGIC 2. **Explotación y Deduplicación Horaria de Check-ins (`slv_checkin` — ADR-01):**
-# MAGIC    * El archivo crudo `checkin.json` entrega todas las fechas concatenadas en un único `STRING` por negocio. En `slv_checkin` se modela a **grano evento individual** (`checkin_id`, `business_id`, `fecha_checkin`) deduplicado por ventana de 60 minutos, conciliando la disputa entre Operaciones Comerciales y Producto.
-# MAGIC 3. **Privacidad por Diseño y Aislamiento Preventivo (`slv_user`, `slv_review`, `slv_review_cuarentena` — ADR-06 y Acta 02):**
-# MAGIC    * `slv_user.name` (PII directa) y `slv_review.text` (PII indirecta) quedan gobernados en Silver; en `gld_dim_usuario` solo se expone `name_masked` y en `gld_fact_resenas` únicamente la longitud `text_len`.
-# MAGIC    * Las reseñas que violan integridad referencial (`fk_review_business`, `fk_review_user`) o rango de estrellas (`chk_slv_review_stars`) no se destruyen: se derivan a `slv_review_cuarentena` con `motivo_rechazo` y `fecha_rechazo`.
-# MAGIC 4. **Grafo Social en Silver (`slv_amistad` — v1.2 Hackolade):**
-# MAGIC    * Se incorpora la relación N:M `slv_amistad (user_id_1, user_id_2)` con clave primaria compuesta y clave foránea hacia `slv_user`, habilitando análisis de conectividad social y detección de fraude coordinado.
+# MAGIC 1. **Categorías en tabla puente (`slv_category` + `slv_business_category`):** el texto `business.categories` se separa por comas y se normaliza en un catálogo con `category_id` generado. En Gold, `gld_bridge_business_category.is_primary` define una sola categoría principal por negocio (la de más negocios en la muestra; en empate, la primera alfabética), y `gld_dim_business.primary_category` la repite para consultas directas.
+# MAGIC 2. **Golden record (`slv_business.master_business_id`, DQ-012):** los negocios con el mismo nombre, dirección y código postal normalizados comparten un negocio maestro; sobrevive el que declara más reseñas (en empate, el `business_id` menor). Gold trabaja con el negocio maestro (`business_key`).
+# MAGIC 3. **Check-ins a grano evento (`slv_checkin`, DQ-010):** el texto `checkin.date` se separa en una fila por fecha-hora. `checkin_id` es un hash determinístico (negocio, fecha-hora y posición), así que el pipeline es idempotente. Los check-ins repetidos del mismo negocio a la misma fecha-hora se conservan con `is_duplicate = true` y no cuentan en las métricas.
+# MAGIC 4. **Reseñas válidas y cuarentena:** las reseñas que incumplen reglas bloqueantes (estrellas fuera de rango, autor o negocio inexistente, fecha imposible, `review_id` repetido) van a `slv_review_quarantine` con `rejection_reason`. Las duplicadas lógicas (mismo usuario, negocio y texto, DQ-002) sí entran a `slv_review`; Gold las marca con `is_valid = false`.
+# MAGIC 5. **Trazabilidad (DQ-015):** todas las tablas Silver llevan `loaded_at` y `source_file`; los hechos Gold llevan `loaded_at` de la carga de Silver.
+# MAGIC 6. **Privacidad:** `slv_user.name` y `gld_dim_user.name` se protegen con `COLUMN MASK` en E6; `slv_review.text` no se publica en Gold.
 # MAGIC
 # MAGIC ---
 # MAGIC ### Definition of Done (E3)
-# MAGIC - [x] DDL completo de silver (7 tablas: 5 entidades core + `slv_amistad` + `slv_review_cuarentena`) y gold (esquema estrella Kimball de 4 tablas + 4 tablas agregadas de KPIs).
+# MAGIC - [x] DDL completo de Silver (10 tablas) y Gold (16 tablas), alineado con `yelp_silver.txt`, `yelp_gold.txt` y `yelp_modelo_logico.drawio`.
 # MAGIC - [x] 100% de columnas con `COMMENT` (la celda de validación pasa con 0 columnas sin documentar).
-# MAGIC - [x] `PRIMARY KEY` / `FOREIGN KEY` informativas declaradas y `CHECK` enforzadas donde el negocio lo exige (`estrellas` y `stars` entre 1 y 5).
-# MAGIC - [x] `TBLPROPERTIES (delta.enableChangeDataFeed = true)` activo en todas las tablas según **ADR-04**.
+# MAGIC - [x] `PRIMARY KEY` / `FOREIGN KEY` informativas y `CHECK` enforzadas.
+# MAGIC - [x] `delta.enableChangeDataFeed = true` en todas las tablas.
+# MAGIC
+# MAGIC > Este notebook se incluye con `%run` desde `E7_pipeline_lakehouse/02_silver_limpieza` (Free Edition permite un solo run activo, por eso no se usa `dbutils.notebook.run`).

@@ -40,13 +40,14 @@ entregables **ejecutables** del Capstone en **Databricks Free Edition**.
 | Catálogo | `workspace` (el default de Free Edition) |
 | Schemas | `yelp_bronze`, `yelp_silver`, `yelp_gold`, `yelp_gov` |
 | Volume de datos crudos | `/Volumes/workspace/yelp_bronze/raw/` |
-| Volume de artefactos de gobierno | `/Volumes/workspace/yelp_gov/artefactos/` |
+| Volume de artefactos de gobierno | `/Volumes/workspace/yelp_gov/artifacts/` |
 | Tablas bronze | `brz_<entidad>` (ej. `brz_business`) |
 | Tablas silver | `slv_<entidad>` |
-| Tablas gold | `gld_<producto_de_datos>` (ej. `gld_kpi_resenas_negocio`) |
+| Tablas gold | `gld_dim_<entidad>`, `gld_fact_<proceso>`, `gld_bridge_<relación>`, `gld_agg_<tema>_<grano>` (ej. `gld_agg_business_month`) |
 | Vistas | `vw_<nombre>` |
 | Reglas de calidad | `DQ-nnn`, correlativas y únicas |
-| Idioma de comentarios/metadata | Español (o inglés, pero consistente) |
+| Nombres de tablas y columnas | Inglés en todas las capas (incluido `yelp_gov` y las columnas de auditoría `_source_file`, `_ingested_at`) |
+| Idioma de comentarios/metadata | Español |
 | Ramas Git | `main` protegida; trabajar en `feature/E<k>-<tema>` y merge por PR |
 
 ## 3. Mapa entregable ↔ carpeta ↔ módulo
@@ -73,17 +74,17 @@ plantillas oficiales del bloque de Seguridad, Gobernanza y Compliance, disponibl
 
 | Plantilla | Hojas | Se carga en |
 |---|---|---|
-| `Glosario_de_terminos_de_negocio_YelpConnect_PLANTILLA.xlsx` | Definiciones · Glosario · Guía Capstone | `workspace.yelp_gov.glosario_negocio` |
-| `Diccionario_de_Datos_YelpConnect_PLANTILLA.xlsx` | Definición · Diccionario · Diccionario resumido · Guía Capstone | `workspace.yelp_gov.diccionario_datos` |
+| `Glosario_de_terminos_de_negocio_YelpConnect_PLANTILLA.xlsx` | Definiciones · Glosario · Guía Capstone | `workspace.yelp_gov.business_glossary` |
+| `Diccionario_de_Datos_YelpConnect_PLANTILLA.xlsx` | Definición · Diccionario · Diccionario resumido · Guía Capstone | `workspace.yelp_gov.data_dictionary` |
 
-Las tablas Delta tienen **exactamente las mismas columnas que las plantillas** (12 y 25
-respectivamente), así que el Excel no se traduce: se carga. Flujo:
+Las tablas Delta tienen **las mismas columnas que las plantillas, en el mismo orden** (12 y 25
+respectivamente, con nombres en inglés), así que el Excel no se reescribe: se carga por posición. Flujo:
 
 1. El grupo completa el Excel (interfaz de negocio, se discute con las "áreas" del caso).
-2. Sube el archivo a `/Volumes/workspace/yelp_gov/artefactos/` sin cambiarle el nombre.
+2. Sube el archivo a `/Volumes/workspace/yelp_gov/artifacts/` sin cambiarle el nombre (los notebooks también lo copian desde `plantillas/`).
 3. Ejecuta los notebooks `E4.../01_glosario_negocio` y `E4.../02_diccionario_datos`.
 4. Los validadores comprueban cobertura, ownership, clasificación y que toda regla citada
-   como `DQ-nnn` exista realmente en `yelp_gov.dq_reglas`.
+   como `DQ-nnn` exista realmente en `yelp_gov.dq_rules`.
 
 Los dos Excel completados se **anexan además al Documento Formal**: son el mismo archivo,
 no dos versiones distintas. El diccionario cierra el círculo cuando su columna de
@@ -120,17 +121,17 @@ Para que un entorno limpio se despliegue de principio a fin sin errores de depen
 | **1** | **0. Setup e Insumos** | `00_setup/00_configurar_lakehouse.py` | Databricks | Crea los schemas (`yelp_bronze`, `yelp_silver`, `yelp_gold`, `yelp_gov`), el Volume `/Volumes/workspace/yelp_bronze/raw/` y las tablas base de gobierno. |
 | **2** | **0. Setup e Insumos** | `datos/preparar_muestra_yelp.py` | **Tu Laptop (Local)** | Filtra el Yelp Open Dataset para `Philadelphia`, genera los 5 archivos `.json.gz` en `datos/muestra/` y se suben a `/Volumes/workspace/yelp_bronze/raw/`. |
 | **3** | **0. Setup e Insumos** | `00_setup/01_verificar_datos_raw.py` | Databricks | Verifica que los 5 archivos `.json.gz` estén en el Volume y perfila sus esquemas antes de ingestar. |
-| **4** | **1. Bronze y DDL** | `E7_pipeline_lakehouse/01_bronze_ingesta.py` | Databricks | Ingesta batch (`brz_business`, `brz_user`, `brz_tip`, `brz_checkin`) e incremental con Auto Loader (`brz_review`) hacia `workspace.yelp_bronze`. |
-| **5** | **1. Bronze y DDL** | `E3_modelo_fisico/01_modelo_fisico_ddl.py` | Databricks | Crea el DDL físico de las 7 tablas Silver (`yelp_silver`) y las 8 tablas Gold (`yelp_gold`) con comentarios, PK/FK, constraints `CHECK` y Change Data Feed. |
-| **6** | **2. Silver, DQ y Metadata** | `E7_pipeline_lakehouse/02_silver_limpieza.py` | Databricks | Transforma y limpia desde Bronze, separa anomalías en `slv_review_cuarentena` y puebla las 7 tablas de `workspace.yelp_silver`. |
-| **7** | **2. Silver, DQ y Metadata** | `E5_calidad_datos/01_reglas_calidad.py` | Databricks | Registra las 15 reglas (`DQ-001` a `DQ-015`) en `yelp_gov.dq_reglas` y evalúa su cumplimiento sobre las tablas Silver en `yelp_gov.dq_resultados`. |
-| **8** | **2. Silver, DQ y Metadata** | `E4_diccionario_glosario/01_glosario_negocio.py` | Databricks | Sincroniza la plantilla Excel de Glosario al Volume `/Volumes/workspace/yelp_gov/artefactos/` y puebla `yelp_gov.glosario_negocio`. |
-| **9** | **2. Silver, DQ y Metadata** | `E4_diccionario_glosario/02_diccionario_datos.py` | Databricks | Sincroniza la plantilla Excel de Diccionario, cruza contra `information_schema` (E3) y `dq_reglas` (E5), puebla `yelp_gov.diccionario_datos` y aplica tags. |
-| **10** | **3. Gold y Gobierno UC** | `E7_pipeline_lakehouse/03_gold_productos_datos.py` | Databricks | Construye y puebla el esquema estrella Kimball (`gld_dim_*`, `gld_fact_resenas`) y las tablas agregadas de KPIs en `workspace.yelp_gold`. |
-| **11** | **3. Gold y Gobierno UC** | `E6_controles_gobierno/01_controles_unity_catalog.py` | Databricks | Registra `yelp_gov.matriz_raci`, aplica `SET TAGS`, permisos `GRANT`/`REVOKE`, máscara PII (`mascara_nombre` en `slv_user.name`) y vista `vw_usuarios_seguro`. |
+| **4** | **1. Bronze y DDL** | `E7_pipeline_lakehouse/01_bronze_ingesta.py` | Databricks | Ingesta batch (`brz_business`, `brz_user`, `brz_tip`, `brz_checkin`) e incremental con Auto Loader (`brz_review`) hacia `workspace.yelp_bronze`, con columnas de auditoría `_source_file` e `_ingested_at`. Registra cada carga en `yelp_gov.pipeline_run_log`. |
+| **5** | **1. Bronze y DDL** | `E3_modelo_fisico/01_modelo_fisico_ddl.py` | Databricks | Crea el DDL físico de las 10 tablas Silver y las 16 tablas Gold según `yelp_silver.txt` / `yelp_gold.txt`, con comentarios, PK/FK, constraints `CHECK` y Change Data Feed. Se ejecuta con `%run` desde el paso 6. |
+| **6** | **2. Silver, DQ y Metadata** | `E7_pipeline_lakehouse/02_silver_limpieza.py` | Databricks | Limpia desde Bronze y puebla las 10 tablas de `workspace.yelp_silver`: golden record de negocios, categorías normalizadas, amistades, check-ins a grano evento y cuarentena de reseñas en `slv_review_quarantine`. Termina con el Quality Gate de E5. |
+| **7** | **2. Silver, DQ y Metadata** | `E5_calidad_datos/01_reglas_calidad.py` | Databricks | Registra las 15 reglas (`DQ-001` a `DQ-015`) en `yelp_gov.dq_rules` y guarda cada evaluación en `yelp_gov.dq_results`. Se ejecuta con `%run` desde el paso 6; las reglas `critical` detienen el pipeline. |
+| **8** | **2. Silver, DQ y Metadata** | `E4_diccionario_glosario/01_glosario_negocio.py` | Databricks | Sincroniza la plantilla Excel de Glosario al Volume `/Volumes/workspace/yelp_gov/artifacts/` y puebla `yelp_gov.business_glossary`. |
+| **9** | **2. Silver, DQ y Metadata** | `E4_diccionario_glosario/02_diccionario_datos.py` | Databricks | Sincroniza la plantilla Excel de Diccionario, cruza contra `information_schema` (E3) y `dq_rules` (E5), puebla `yelp_gov.data_dictionary` y aplica el tag `classification` por columna. |
+| **10** | **3. Gold y Gobierno UC** | `E7_pipeline_lakehouse/03_gold_productos_datos.py` | Databricks | Puebla el modelo dimensional de `workspace.yelp_gold`: 4 dimensiones (`gld_dim_*`), el puente `gld_bridge_business_category`, 3 hechos (`gld_fact_review`, `gld_fact_checkin`, `gld_fact_tip`) y 8 agregados (`gld_agg_*`). |
+| **11** | **3. Gold y Gobierno UC** | `E6_controles_gobierno/01_controles_unity_catalog.py` | Databricks | Registra `yelp_gov.raci_matrix`, aplica `SET TAGS`, permisos `GRANT`, máscara PII (`mask_name` en `slv_user.name` y `gld_dim_user.name`) y vista `vw_user_secure`. |
 | **12** | **4. BI, DataOps e IA** | `E8_dashboard_bi/01_consultas_base_dashboard.py` | Databricks | Ejecuta y valida las consultas analíticas y de gobierno sobre `yelp_gold` y `yelp_gov` que alimentan el Dashboard BI y Genie. |
-| **13** | **4. BI, DataOps e IA** | `E7_pipeline_lakehouse/04_job_orquestacion.py` | Databricks | Crea/actualiza el Lakeflow Job diario encadenado y genera el monitoreo de observabilidad y FinOps desde `yelp_gov.pipeline_bitacora`. |
-| **14** | **4. BI, DataOps e IA** | `EX_bonus_ia/01_analisis_ia_resenas.py` | Databricks *(Bonus)* | Ejecuta el enriquecimiento analítico de sentimiento y tópicos con IA sobre las reseñas certificadas. |
+| **13** | **4. BI, DataOps e IA** | `E7_pipeline_lakehouse/04_job_orquestacion.py` | Databricks | Crea/actualiza el Lakeflow Job diario encadenado y genera el monitoreo de observabilidad y FinOps desde `yelp_gov.pipeline_run_log`. |
+| **14** | **4. BI, DataOps e IA** | `EX_bonus_ia/01_analisis_ia_resenas.py` | Databricks *(Bonus)* | Enriquece con IA una muestra de 500 reseñas válidas (sentimiento, tópico y consistencia con las estrellas) en `gld_review_ai_enriched`. |
 
 ### Resumen visual del flujo lineal
 ```text
@@ -142,15 +143,15 @@ Para que un entorno limpio se despliegue de principio a fin sin errores de depen
    ↓
 [Paso 4]  E7_pipeline_lakehouse/01_bronze_ingesta.py   (Carga brz_business, brz_user, brz_tip, brz_checkin, brz_review)
    ↓
-[Paso 5]  E3_modelo_fisico/01_modelo_fisico_ddl.py     (Crea DDL de tablas Silver 3FN y Gold Kimball con comments/PK/FK)
+[Paso 5]  E3_modelo_fisico/01_modelo_fisico_ddl.py     (DDL de 10 tablas Silver y 16 Gold con comments/PK/FK)
    ↓
-[Paso 6]  E7_pipeline_lakehouse/02_silver_limpieza.py  (Limpia, deduplica y puebla las 7 tablas slv_* + cuarentena)
+[Paso 6]  E7_pipeline_lakehouse/02_silver_limpieza.py  (Puebla las 10 tablas slv_*, incluida la cuarentena)
    ↓
-[Paso 7]  E5_calidad_datos/01_reglas_calidad.py        (Registra DQ-001..DQ-015 en dq_reglas y evalúa dq_resultados)
+[Paso 7]  E5_calidad_datos/01_reglas_calidad.py        (Registra DQ-001..DQ-015 en dq_rules y evalúa en dq_results)
    ↓
-[Paso 8]  E4_diccionario_glosario/01_glosario_negocio.py   (Carga Excel de Glosario → yelp_gov.glosario_negocio)
+[Paso 8]  E4_diccionario_glosario/01_glosario_negocio.py   (Carga Excel de Glosario → yelp_gov.business_glossary)
    ↓
-[Paso 9]  E4_diccionario_glosario/02_diccionario_datos.py  (Carga Excel de Diccionario + valida contra DDL E3 y reglas E5)
+[Paso 9]  E4_diccionario_glosario/02_diccionario_datos.py  (Carga Excel de Diccionario → yelp_gov.data_dictionary)
    ↓
 [Paso 10] E7_pipeline_lakehouse/03_gold_productos_datos.py (Puebla dimensiones, hechos y KPIs en workspace.yelp_gold)
    ↓
@@ -176,5 +177,5 @@ El job **`Pipeline_Medallon_YelpConnect_Grupo03`** (Lakeflow Jobs, diario a las 
 
 E4 (glosario y diccionario), E8 (consultas del dashboard) y EX (IA) se ejecutan aparte, después del job.
 
-La especificación de diagramas del modelo lógico Silver y del modelo dimensional Gold está en
+El detalle de todas las tablas y columnas, generado desde Unity Catalog, está en
 [`documentos/03_modelo_logico_y_dimensional_gold.md`](documentos/03_modelo_logico_y_dimensional_gold.md).

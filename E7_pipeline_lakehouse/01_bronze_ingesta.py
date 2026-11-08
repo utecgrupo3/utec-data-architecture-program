@@ -4,7 +4,7 @@
 # MAGIC **Cierra con:** M6 Big Data (batch) + M7 Integración (incremental/streaming)
 # MAGIC
 # MAGIC Principio de la capa bronze: **fidelidad al origen** — sin limpiar, sin filtrar,
-# MAGIC pero SÍ con metadata de auditoría (`_archivo_origen`, `_fecha_ingesta`).
+# MAGIC pero SÍ con metadata de auditoría (`_source_file`, `_ingested_at`).
 # MAGIC
 # MAGIC Dos modos:
 # MAGIC - **Batch full** (4 entidades maestras y de volumen moderado): lectura directa desde el Volume `/Volumes/workspace/yelp_bronze/raw/`.
@@ -26,19 +26,19 @@ ENTIDADES = ["business", "user", "tip", "checkin"]  # review se procesa con Auto
 spark.sql("CREATE SCHEMA IF NOT EXISTS workspace.yelp_bronze")
 spark.sql("CREATE SCHEMA IF NOT EXISTS workspace.yelp_gov")
 spark.sql("""
-CREATE TABLE IF NOT EXISTS workspace.yelp_gov.pipeline_bitacora (
-  ejecucion_ts     TIMESTAMP,
-  capa             STRING,
-  tabla            STRING,
-  filas            BIGINT,
-  duracion_seg     DOUBLE
+CREATE TABLE IF NOT EXISTS workspace.yelp_gov.pipeline_run_log (
+  executed_at      TIMESTAMP COMMENT 'Momento del registro',
+  layer            STRING    COMMENT 'Capa medallón (bronze, silver, gold)',
+  table_name       STRING    COMMENT 'Tabla procesada',
+  row_count        BIGINT    COMMENT 'Filas resultantes en la tabla',
+  duration_sec     DOUBLE    COMMENT 'Duración en segundos de la etapa'
 ) COMMENT 'Observabilidad del pipeline: volumetría y duración por corrida'
 """)
 
 def registrar_bitacora(capa: str, tabla: str, filas: int, t0: float):
     dur = round(time.time() - t0, 2)
     spark.sql(f"""
-        INSERT INTO workspace.yelp_gov.pipeline_bitacora
+        INSERT INTO workspace.yelp_gov.pipeline_run_log
         VALUES (current_timestamp(), '{capa}', '{tabla}', {int(filas)}, {dur})
     """)
     print(f"✔ [{capa.upper()}] {tabla}: {filas:,} filas ({dur} s)")
@@ -50,8 +50,8 @@ for e in ENTIDADES:
     t0 = time.time()
     tabla_destino = f"workspace.yelp_bronze.brz_{e}"
     (spark.read.json(f"{RAW}/{e}.json*")
-        .withColumn("_archivo_origen", F.col("_metadata.file_path"))
-        .withColumn("_fecha_ingesta", F.current_timestamp())
+        .withColumn("_source_file", F.col("_metadata.file_path"))
+        .withColumn("_ingested_at", F.current_timestamp())
         .write.mode("overwrite")
         .option("overwriteSchema", "true")
         .saveAsTable(tabla_destino))
@@ -62,7 +62,7 @@ for e in ENTIDADES:
 
 # DBTITLE 1,Modo incremental — Auto Loader (cloudFiles) para review (la entidad de mayor volumen)
 t0 = time.time()
-CHECKPOINT = "/Volumes/workspace/yelp_bronze/raw/_checkpoints/review"
+CHECKPOINT = "/Volumes/workspace/yelp_bronze/raw/_checkpoints/review_v2"  # v2: columnas de auditoría en inglés (_source_file, _ingested_at)
 TABLA_REVIEW = "workspace.yelp_bronze.brz_review"
 
 query = (spark.readStream
@@ -72,8 +72,8 @@ query = (spark.readStream
     .option("cloudFiles.inferColumnTypes", "true")
     .option("cloudFiles.schemaEvolutionMode", "addNewColumns")
     .load(f"{RAW}/review*.json*")
-    .withColumn("_archivo_origen", F.col("_metadata.file_path"))
-    .withColumn("_fecha_ingesta", F.current_timestamp())
+    .withColumn("_source_file", F.col("_metadata.file_path"))
+    .withColumn("_ingested_at", F.current_timestamp())
  .writeStream
     .format("delta")
     .outputMode("append")
@@ -112,7 +112,7 @@ COMENTARIOS_COLUMNAS_BRONZE = {
         "review_count": "Conteo bruto acumulado de reseñas en el origen",
         "is_open": "Indicador crudo de apertura en formato entero (1 = abierto, 0 = cerrado)",
         "attributes": "Objeto STRUCT anidado con 39 subcampos opcionales de características del negocio retenido en Bronze bajo Schema-on-Read (ADR-07)",
-        "categories": "Cadena de texto con las categorías del negocio separadas por comas (se transforma a ARRAY<STRING> en Silver según ADR-03)",
+        "categories": "Cadena de texto con las categorías del negocio separadas por comas (se normaliza en Silver en slv_category y la tabla puente slv_business_category)",
         "hours": "Objeto STRUCT anidado con los horarios de atención por día de la semana (Monday a Sunday) retenido en Bronze (ADR-07)",
     },
     "brz_user": {
@@ -124,7 +124,7 @@ COMENTARIOS_COLUMNAS_BRONZE = {
         "funny": "Total de votos funny enviados por el usuario",
         "cool": "Total de votos cool enviados por el usuario",
         "elite": "Años en los que el usuario tuvo estatus Elite concatenados por comas",
-        "friends": "Lista cruda de user_id de amigos concatenados por comas (origina slv_amistad en Silver)",
+        "friends": "Lista cruda de user_id de amigos concatenados por comas (origina slv_friendship en Silver)",
         "fans": "Cantidad de seguidores (fans) del usuario",
         "average_stars": "Promedio histórico de estrellas otorgadas por el usuario",
         "compliment_hot": "Cumplidos recibidos de tipo hot",
@@ -148,7 +148,7 @@ COMENTARIOS_COLUMNAS_BRONZE = {
     },
     "brz_checkin": {
         "business_id": "Identificador del negocio donde ocurrieron los check-ins",
-        "date": "Cadena con todas las marcas temporales de check-in del negocio concatenadas por comas (se explota y deduplica por hora en Silver según ADR-01)",
+        "date": "Cadena con todas las marcas temporales de check-in del negocio concatenadas por comas (se separa en una fila por fecha-hora en slv_checkin, con is_duplicate según DQ-010)",
     },
     "brz_review": {
         "review_id": "Identificador natural único de la reseña en el JSON crudo",
@@ -164,8 +164,8 @@ COMENTARIOS_COLUMNAS_BRONZE = {
 }
 
 COMENTARIOS_AUDITORIA = {
-    "_archivo_origen": "Ruta física del archivo .json/.json.gz de origen en el Volume (/Volumes/workspace/yelp_bronze/raw/)",
-    "_fecha_ingesta": "Timestamp exacto de ingesta del registro hacia la capa Bronze (auditoría técnica)",
+    "_source_file": "Ruta física del archivo .json/.json.gz de origen en el Volume (/Volumes/workspace/yelp_bronze/raw/)",
+    "_ingested_at": "Timestamp exacto de ingesta del registro hacia la capa Bronze (auditoría técnica)",
     "_rescued_data": "Columna de rescate generada por Auto Loader (cloudFiles) para capturar campos no conformes o evolución inesperada de tipos",
 }
 
@@ -185,7 +185,7 @@ for tabla_corta, comentario_tabla in COMENTARIOS_TABLAS_BRONZE.items():
 # MAGIC ## 1. ¿Por qué Auto Loader (`cloudFiles`) garantiza Ingesta Idempotente (*Exactly-Once*)?
 # MAGIC
 # MAGIC La implementación de `brz_review` con **Databricks Auto Loader** resuelve el requerimiento de ingesta incremental sin duplicados gracias a tres mecanismos combinados:
-# MAGIC 1. **Estado persistente en Checkpoint (`checkpointLocation`):** Auto Loader mantiene en `/Volumes/workspace/yelp_bronze/raw/_checkpoints/review` un registro transaccional (RocksDB) con el identificador y ruta de cada archivo `.json.gz` ya procesado. Si el notebook se vuelve a ejecutar sin archivos nuevos, el stream detecta que todos los archivos ya figuran en el checkpoint y procesa **0 filas nuevas**.
+# MAGIC 1. **Estado persistente en Checkpoint (`checkpointLocation`):** Auto Loader mantiene en `/Volumes/workspace/yelp_bronze/raw/_checkpoints/review_v2` un registro transaccional (RocksDB) con el identificador y ruta de cada archivo `.json.gz` ya procesado. Si el notebook se vuelve a ejecutar sin archivos nuevos, el stream detecta que todos los archivos ya figuran en el checkpoint y procesa **0 filas nuevas**.
 # MAGIC 2. **Inferencia y Evolución de Esquema (`cloudFiles.schemaLocation`):** Almacena el esquema inferido del JSON en `CHECKPOINT/schema` (`inferColumnTypes = true`, `schemaEvolutionMode = addNewColumns`). Esto evita re-escanear todos los archivos históricos en cada corrida y permite absorber nuevos campos del backend sin romper el pipeline.
 # MAGIC 3. **Ejecución Eficiente FinOps (`trigger(availableNow=True)`):** En lugar de mantener un clúster prendido 24/7 esperando eventos (lo que agotaría la cuota de Databricks Free Edition), `availableNow=True` procesa en micro-batches todos los archivos nuevos que hayan llegado al Volume desde la última corrida y termina inmediatamente liberando el cómputo Serverless.
 # MAGIC
@@ -207,6 +207,6 @@ for tabla_corta, comentario_tabla in COMENTARIOS_TABLAS_BRONZE.items():
 # MAGIC 3. **Corrida 3 (Llegada incremental):** Al subir un lote adicional `review_2.json.gz` al Volume y re-ejecutar → Auto Loader procesa **únicamente** las filas de `review_2.json.gz`.
 # MAGIC
 # MAGIC ### Definition of Done (E7.1)
-# MAGIC - [x] 5 tablas bronze pobladas con columnas de auditoría (`_archivo_origen`, `_fecha_ingesta`) y registradas en `pipeline_bitacora`.
+# MAGIC - [x] 5 tablas bronze pobladas con columnas de auditoría (`_source_file`, `_ingested_at`) y registradas en `pipeline_run_log`.
 # MAGIC - [x] Mecanismo de idempotencia de Auto Loader configurado y documentado.
 # MAGIC - [x] Decisión batch vs streaming justificada por entidad en tabla comparativa.
