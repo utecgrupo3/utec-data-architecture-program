@@ -14,7 +14,7 @@
 # MAGIC Si el borrador autogenerado sale con huecos, la deuda está en el DDL de E3, no aquí.
 # MAGIC
 # MAGIC > **Trazabilidad —** este entregable **implementa** la sección «Anexo B · Diccionario de Datos» y las Secciones 4.2, 4.3, 4.4, 5.3, 5.4 y 6.2 del
-# MAGIC > **Documento Formal de Arquitectura de Datos (v1.2 · Equipo Data Evolution)**. El Excel institucional se anexa al documento; esta tabla Delta permite auditar automáticamente la cobertura de documentación contra el catálogo.
+# MAGIC > **Documento Formal de Arquitectura de Datos (v1.3 · Equipo Data Evolution)**. El Excel institucional se anexa al documento; esta tabla Delta permite auditar automáticamente la cobertura de documentación contra el catálogo.
 
 # COMMAND ----------
 

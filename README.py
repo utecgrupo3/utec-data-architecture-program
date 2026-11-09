@@ -84,7 +84,7 @@
 # MAGIC
 # MAGIC 1. El grupo completa el Excel (interfaz de negocio, se discute con las "áreas" del caso).
 # MAGIC 2. Sube el archivo a `/Volumes/workspace/yelp_gov/artifacts/` sin cambiarle el nombre (los notebooks también lo copian desde `plantillas/`).
-# MAGIC 3. Ejecuta los notebooks `E4.../01_glosario_negocio` y `E4.../02_diccionario_datos`.
+# MAGIC 3. Ejecuta los notebooks `E4.../01_business_glossary` y `E4.../02_data_dictionary`.
 # MAGIC 4. Los validadores comprueban cobertura, ownership, clasificación y que toda regla citada
 # MAGIC    como `DQ-nnn` exista realmente en `yelp_gov.dq_rules`.
 # MAGIC
@@ -127,8 +127,8 @@
 # MAGIC | **5** | **1. Bronze y DDL** | `E3_modelo_fisico/01_modelo_fisico_ddl.py` | Databricks | Crea el DDL físico de las 10 tablas Silver y las 16 tablas Gold según `yelp_silver.txt` / `yelp_gold.txt`, con comentarios, PK/FK, constraints `CHECK` y Change Data Feed. Se ejecuta con `%run` desde el paso 6. |
 # MAGIC | **6** | **2. Silver, DQ y Metadata** | `E7_pipeline_lakehouse/02_silver_limpieza.py` | Databricks | Limpia desde Bronze y puebla las 10 tablas de `workspace.yelp_silver`: golden record de negocios, categorías normalizadas, amistades, check-ins a grano evento y cuarentena de reseñas en `slv_review_quarantine`. Termina con el Quality Gate de E5. |
 # MAGIC | **7** | **2. Silver, DQ y Metadata** | `E5_calidad_datos/01_reglas_calidad.py` | Databricks | Registra las 20 reglas (`DQ-001` a `DQ-020`) en `yelp_gov.dq_rules` y guarda cada evaluación en `yelp_gov.dq_results`. Se ejecuta con `%run` desde el paso 6; las reglas `critical` detienen el pipeline. |
-# MAGIC | **8** | **2. Silver, DQ y Metadata** | `E4_diccionario_glosario/01_glosario_negocio.py` | Databricks | Sincroniza la plantilla Excel de Glosario al Volume `/Volumes/workspace/yelp_gov/artifacts/` y puebla `yelp_gov.business_glossary`. |
-# MAGIC | **9** | **2. Silver, DQ y Metadata** | `E4_diccionario_glosario/02_diccionario_datos.py` | Databricks | Sincroniza la plantilla Excel de Diccionario, cruza contra `information_schema` (E3) y `dq_rules` (E5), puebla `yelp_gov.data_dictionary` y aplica el tag `classification` por columna. |
+# MAGIC | **8** | **2. Silver, DQ y Metadata** | `E4_diccionario_glosario/01_business_glossary.py` | Databricks | Sincroniza la plantilla Excel de Glosario al Volume `/Volumes/workspace/yelp_gov/artifacts/` y puebla `yelp_gov.business_glossary`. |
+# MAGIC | **9** | **2. Silver, DQ y Metadata** | `E4_diccionario_glosario/02_data_dictionary.py` | Databricks | Sincroniza la plantilla Excel de Diccionario, cruza contra `information_schema` (E3) y `dq_rules` (E5), puebla `yelp_gov.data_dictionary` y aplica el tag `classification` por columna. |
 # MAGIC | **10** | **3. Gold y Gobierno UC** | `E7_pipeline_lakehouse/03_gold_productos_datos.py` | Databricks | Puebla el modelo dimensional de `workspace.yelp_gold`: 4 dimensiones (`gld_dim_*`), el puente `gld_bridge_business_category`, 3 hechos (`gld_fact_review`, `gld_fact_checkin`, `gld_fact_tip`) y 8 agregados (`gld_agg_*`). |
 # MAGIC | **11** | **3. Gold y Gobierno UC** | `E6_controles_gobierno/01_controles_unity_catalog.py` | Databricks | Registra `yelp_gov.raci_matrix`, aplica `SET TAGS`, permisos `GRANT`, máscara PII (`mask_name` en `slv_user.name` y `gld_dim_user.name`) y vista `vw_user_secure`. |
 # MAGIC | **12** | **4. BI, DataOps e IA** | `E8_dashboard_bi/01_consultas_base_dashboard.py` | Databricks | Ejecuta y valida las consultas analíticas y de gobierno sobre `yelp_gold` y `yelp_gov` que alimentan el Dashboard BI y Genie. |
@@ -151,9 +151,9 @@
 # MAGIC    ↓
 # MAGIC [Paso 7]  E5_calidad_datos/01_reglas_calidad.py        (Registra DQ-001..DQ-020 en dq_rules y evalúa en dq_results)
 # MAGIC    ↓
-# MAGIC [Paso 8]  E4_diccionario_glosario/01_glosario_negocio.py   (Carga Excel de Glosario → yelp_gov.business_glossary)
+# MAGIC [Paso 8]  E4_diccionario_glosario/01_business_glossary.py   (Carga Excel de Glosario → yelp_gov.business_glossary)
 # MAGIC    ↓
-# MAGIC [Paso 9]  E4_diccionario_glosario/02_diccionario_datos.py  (Carga Excel de Diccionario → yelp_gov.data_dictionary)
+# MAGIC [Paso 9]  E4_diccionario_glosario/02_data_dictionary.py  (Carga Excel de Diccionario → yelp_gov.data_dictionary)
 # MAGIC    ↓
 # MAGIC [Paso 10] E7_pipeline_lakehouse/03_gold_productos_datos.py (Puebla dimensiones, hechos y KPIs en workspace.yelp_gold)
 # MAGIC    ↓
@@ -179,5 +179,5 @@
 # MAGIC
 # MAGIC E4 (glosario y diccionario), E8 (consultas del dashboard) y EX (IA) se ejecutan aparte, después del job.
 # MAGIC
-# MAGIC El detalle de todas las tablas y columnas, generado desde Unity Catalog, está en
-# MAGIC [`documentos/03_modelo_logico_y_dimensional_gold.md`](documentos/03_modelo_logico_y_dimensional_gold.md).
+# MAGIC El Documento Formal de Arquitectura de Datos (versión 1.3, alineado con este repositorio y con el catálogo) está en
+# MAGIC [`documentos/Documento_Formal_G3_Evolution_Data.docx`](documentos/Documento_Formal_G3_Evolution_Data.docx).

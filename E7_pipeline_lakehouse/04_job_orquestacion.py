@@ -8,7 +8,7 @@
 # MAGIC operativización que convierte el capstone en una plataforma gobernada.
 # MAGIC
 # MAGIC > **Trazabilidad —** implementa la **Sección 8 («Modelo Operativo y Consideraciones FinOps»)** del
-# MAGIC > **Documento Formal de Arquitectura de Datos (v1.2 · Equipo Data Evolution)**.
+# MAGIC > **Documento Formal de Arquitectura de Datos (v1.3 · Equipo Data Evolution)**.
 # MAGIC
 # MAGIC ---
 # MAGIC ## 1. Grafo de Tareas del Lakeflow Job (`pipeline_lakehouse_yelp_grupo03`)

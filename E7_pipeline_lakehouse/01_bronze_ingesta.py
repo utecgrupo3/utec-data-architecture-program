@@ -12,7 +12,7 @@
 # MAGIC   demuestra ingesta idempotente *exactly-once* — si se sube un archivo nuevo al Volume, solo procesa el archivo nuevo.
 # MAGIC
 # MAGIC > **Trazabilidad —** este entregable **implementa** la **Sección 3.2 y 3.3 («Arquitectura de Referencia ABB / SBB — Capa Bronze»)** del
-# MAGIC > **Documento Formal de Arquitectura de Datos (v1.2 · Equipo Data Evolution)**.
+# MAGIC > **Documento Formal de Arquitectura de Datos (v1.3 · Equipo Data Evolution)**.
 
 # COMMAND ----------
 

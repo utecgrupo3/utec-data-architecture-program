@@ -18,7 +18,7 @@
 # MAGIC > "traduce", se carga. Ese es el principio de un glosario vivo.
 # MAGIC
 # MAGIC > **Trazabilidad —** este entregable **implementa** la sección «Anexo A · Glosario de Términos de Negocio» y las Secciones 4.1, 5.1 y 7.2 del
-# MAGIC > **Documento Formal de Arquitectura de Datos (v1.2 · Equipo Data Evolution)**. El Excel institucional se anexa al documento; esta tabla Delta es la versión consultable desde Genie y el dashboard de gobierno.
+# MAGIC > **Documento Formal de Arquitectura de Datos (v1.3 · Equipo Data Evolution)**. El Excel institucional se anexa al documento; esta tabla Delta es la versión consultable desde Genie y el dashboard de gobierno.
 
 # COMMAND ----------
 
@@ -126,7 +126,7 @@ print(f"✔ Glosario válido: {n} términos · {sin_dominio} dominios · "
 # MAGIC %md
 # MAGIC ## Acta de Negociación Semántica del Equipo (Grupo 03 · Data Evolution)
 # MAGIC
-# MAGIC Conforme al **Anexo D (Actas de Decisión del Equipo)** y la **Sección 5 (Estrategia de Gobierno y Matriz RACI)** del *Documento Formal de Arquitectura de Datos (v1.2)*, los 23 términos del glosario fueron acordados mediante cuatro sesiones de conciliación entre los representantes de cada dominio:
+# MAGIC Conforme al **Anexo D (Actas de Decisión del Equipo)** y la **Sección 5 (Estrategia de Gobierno y Matriz RACI)** del *Documento Formal de Arquitectura de Datos (v1.3)*, los 23 términos del glosario fueron acordados mediante cuatro sesiones de conciliación entre los representantes de cada dominio:
 # MAGIC
 # MAGIC | Acta | Fecha | Conflicto Semántico entre Áreas | Acuerdo Institucional Aprobado | Data Owners Firmantes |
 # MAGIC | :--- | :--- | :--- | :--- | :--- |
